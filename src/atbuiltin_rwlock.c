@@ -281,10 +281,11 @@ int atbuiltin_rwlock_timedwlock(atbuiltin_rwlock_t *lock, const struct timespec 
 {
   int res;
   struct timespec tss, tsc, tsr;
+  tsr = *timeout;
   clock_gettime(CLOCK_MONOTONIC, &tss);
   if (pthread_mutex_trylock(&lock->mutex))
   {
-    if ((res = pthread_mutex_timedlock(&lock->mutex, timeout)))
+    if ((res = pthread_mutex_timedlock(&lock->mutex, &tsr)))
     {
       return res;
     }
