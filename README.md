@@ -4,14 +4,14 @@ atbuiltin_rwlock
 RW lock functions using atomic builtins
 
 ### Performance test results ###
-#### Test machine's enviroments ####
-   CPU: AMD Phenom(tm) II X6 1065T (6 core)
-MEMORY: 32GB
-    OS: CentOS 6.3
- glibc: 2.12-1.132
+##### Test machine's enviroments #####
+* CPU: AMD Phenom(tm) II X6 1065T (6 core)
+* MEMORY: 32GB
+* OS: CentOS 6.3
+* glibc: 2.12-1.132
 
 Test source codes are in test directory.
-#### Test results ####
+##### Test results #####
 * 100 threads 1000000 loops
 
 1. pthread_rwlock (use PTHREAD_RWLOCK_PREFER_WRITER_NONRECURSIVE_NP)
