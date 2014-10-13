@@ -273,6 +273,7 @@ int atbuiltin_rwlock_trywlock(atbuiltin_rwlock_t *lock)
     /* lock success */
     return 0;
   }
+  pthread_mutex_unlock(&lock->mutex);
   return EBUSY;
 }
 
@@ -303,6 +304,7 @@ int atbuiltin_rwlock_timedwlock(atbuiltin_rwlock_t *lock, const struct timespec 
     clock_gettime(CLOCK_MONOTONIC, &tsc);
     if (timespec_sub(&tsr, &tss, &tsc))
     {
+      pthread_mutex_unlock(&lock->mutex);
       return ETIMEDOUT;
     }
     if (lock->write_lock_interval)
