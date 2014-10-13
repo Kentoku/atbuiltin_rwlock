@@ -23,3 +23,11 @@ Test source codes are in test directory.
   * rlock 100%, wlock   0% :  7 seconds
   * rlock  90%, wlock  10% : 10 seconds
   * rlock   0%, wlock 100% : 30 seconds
+
+### Limitations ###
+If over the following number of threads use this functions at same time, please set -DATBUILTIN_RWLOCK_USE_LONG_LONG_FOR_LOCK_BODY option for building.
+* 8bit: 127 threads
+* 16bit: 32767 threads
+* 32bit: 2147483647 threads
+
+Limitations of 64bit and with -DATBUILTIN_RWLOCK_USE_LONG_LONG_FOR_LOCK_BODY are 9223372036854775807 threads.
