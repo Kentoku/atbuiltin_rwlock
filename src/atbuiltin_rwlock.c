@@ -81,14 +81,39 @@ static bool timespec_sub(struct timespec *tsr, const struct timespec *tss, const
 
 int atbuiltin_rwlockattr_init(atbuiltin_rwlock_attr_t *attr)
 {
+  int ret;
   attr->rwlock_attr = PTHREAD_RWLOCK_PREFER_READER_NP;
   attr->write_lock_interval = 0;
-  return pthread_mutexattr_init(&attr->mutex_attr);
+  if ((ret = pthread_condattr_init(&attr->cond_attr)))
+    goto error_condattr_init;
+  if ((ret = pthread_mutexattr_init(&attr->mutex_attr)))
+    goto error_mutexattr_init;
+  return 0;
+
+error_mutexattr_init:
+  pthread_condattr_destroy(&attr->cond_attr);
+error_condattr_init:
+  return ret;
 }
 
 int atbuiltin_rwlockattr_destroy(atbuiltin_rwlock_attr_t *attr)
 {
-  return pthread_mutexattr_destroy(&attr->mutex_attr);
+  int ret1, ret2;
+  ret1 = pthread_condattr_destroy(&attr->cond_attr);
+  ret2 = pthread_mutexattr_destroy(&attr->mutex_attr);
+  if (ret1)
+    return ret1;
+  return ret2;
+}
+
+int atbuiltin_rwlockattr_setpshared_cond(atbuiltin_rwlock_attr_t *attr, int pshared)
+{
+  return pthread_condattr_setpshared(&attr->cond_attr, pshared);
+}
+
+int atbuiltin_rwlockattr_getpshared_cond(atbuiltin_rwlock_attr_t *attr, int *pshared)
+{
+  return pthread_condattr_getpshared(&attr->cond_attr, pshared);
 }
 
 int atbuiltin_rwlockattr_settype_mutex(atbuiltin_rwlock_attr_t *attr, int kind)
@@ -136,7 +161,9 @@ int atbuiltin_rwlockattr_gettype_write_lock_interval(atbuiltin_rwlock_attr_t *at
 
 int atbuiltin_rwlock_init(atbuiltin_rwlock_t *lock, const atbuiltin_rwlock_attr_t *attr)
 {
+  int ret;
   lock->lock_body = 0;
+  lock->writer_count = 0;
   lock->write_waiting = false;
   if (attr)
   {
@@ -145,21 +172,44 @@ int atbuiltin_rwlock_init(atbuiltin_rwlock_t *lock, const atbuiltin_rwlock_attr_
     if (attr->rwlock_attr == PTHREAD_RWLOCK_PREFER_READER_NP)
     {
       lock->write_priority = false;
+      lock->write_counting = false;
     } else {
       lock->write_priority = true;
+      if (attr->rwlock_attr == PTHREAD_RWLOCK_PREFER_WRITER_NONRECURSIVE_NP)
+      {
+        lock->write_counting = true;
+      }
     }
-    return pthread_mutex_init(&lock->mutex, &attr->mutex_attr);
+    if ((ret = pthread_cond_init(&lock->cond, &attr->cond_attr)))
+      goto error_cond_init;
+    if ((ret = pthread_mutex_init(&lock->mutex, &attr->mutex_attr)))
+      goto error_mutex_init;
   } else {
     lock->write_lock_interval = 0;
     get_timespec_from_nanosec(&lock->write_lock_interval_ts, lock->write_lock_interval);
     lock->write_priority = false;
-    return pthread_mutex_init(&lock->mutex, NULL);
+    lock->write_counting = false;
+    if ((ret = pthread_cond_init(&lock->cond, NULL)))
+      goto error_cond_init;
+    if ((ret = pthread_mutex_init(&lock->mutex, NULL)))
+      goto error_mutex_init;
   }
+  return 0;
+
+error_mutex_init:
+  pthread_cond_destroy(&lock->cond);
+error_cond_init:
+  return ret;
 }
 
 int atbuiltin_rwlock_destroy(atbuiltin_rwlock_t *lock)
 {
-  return pthread_mutex_destroy(&lock->mutex);
+  int ret1, ret2;
+  ret1 = pthread_cond_destroy(&lock->cond);
+  ret2 = pthread_mutex_destroy(&lock->mutex);
+  if (ret1)
+    return ret1;
+  return ret2;
 }
 
 int atbuiltin_rwlock_tryrlock(atbuiltin_rwlock_t *lock)
@@ -170,11 +220,12 @@ int atbuiltin_rwlock_tryrlock(atbuiltin_rwlock_t *lock)
 #else
   int cnt;
 #endif
-  if (lock->write_priority && lock->write_waiting)
+  if (lock->write_priority)
   {
-    if ((res = pthread_mutex_trylock(&lock->mutex)))
-      return res;
-    pthread_mutex_unlock(&lock->mutex);
+    if (lock->write_waiting)
+    {
+      return EBUSY;
+    }
   }
   cnt = __sync_add_and_fetch(&lock->lock_body, 1);
   if (cnt > 0)
@@ -197,13 +248,38 @@ int atbuiltin_rwlock_timedrlock(atbuiltin_rwlock_t *lock, const struct timespec 
   struct timespec tss, tsc, tsr;
   tsr = *timeout;
   clock_gettime(CLOCK_MONOTONIC, &tss);
-  if (lock->write_priority && lock->write_waiting)
+  if (lock->write_priority)
   {
-    if ((res = pthread_mutex_timedlock(&lock->mutex, timeout)))
+    while (lock->write_waiting)
     {
-      return res;
+      if ((res = pthread_mutex_timedlock(&lock->mutex, &tsr)))
+      {
+        return res;
+      }
+      if (lock->write_waiting)
+      {
+        clock_gettime(CLOCK_MONOTONIC, &tsc);
+        if (timespec_sub(&tsr, &tss, &tsc))
+        {
+          pthread_mutex_unlock(&lock->mutex);
+          return ETIMEDOUT;
+        }
+        if ((res = pthread_cond_timedwait(&lock->cond, &lock->mutex, &tsr)))
+        {
+          if (res == ETIMEDOUT)
+          {
+            pthread_mutex_unlock(&lock->mutex);
+            return ETIMEDOUT;
+          }
+        }
+      }
+      pthread_mutex_unlock(&lock->mutex);
+      clock_gettime(CLOCK_MONOTONIC, &tsc);
+      if (timespec_sub(&tsr, &tss, &tsc))
+      {
+        return ETIMEDOUT;
+      }
     }
-    pthread_mutex_unlock(&lock->mutex);
   }
   while (true)
   {
@@ -223,6 +299,23 @@ int atbuiltin_rwlock_timedrlock(atbuiltin_rwlock_t *lock, const struct timespec 
     {
       return res;
     }
+    if (lock->write_waiting)
+    {
+      clock_gettime(CLOCK_MONOTONIC, &tsc);
+      if (timespec_sub(&tsr, &tss, &tsc))
+      {
+        pthread_mutex_unlock(&lock->mutex);
+        return ETIMEDOUT;
+      }
+      if ((res = pthread_cond_timedwait(&lock->cond, &lock->mutex, &tsr)))
+      {
+        if (res == ETIMEDOUT)
+        {
+          pthread_mutex_unlock(&lock->mutex);
+          return ETIMEDOUT;
+        }
+      }
+    }
     pthread_mutex_unlock(&lock->mutex);
   }
 }
@@ -234,10 +327,17 @@ int atbuiltin_rwlock_rlock(atbuiltin_rwlock_t *lock)
 #else
   int cnt;
 #endif
-  if (lock->write_priority && lock->write_waiting)
+  if (lock->write_priority)
   {
-    pthread_mutex_lock(&lock->mutex);
-    pthread_mutex_unlock(&lock->mutex);
+    while (lock->write_waiting)
+    {
+      pthread_mutex_lock(&lock->mutex);
+      if (lock->write_waiting)
+      {
+        pthread_cond_wait(&lock->cond, &lock->mutex);
+      }
+      pthread_mutex_unlock(&lock->mutex);
+    }
   }
   while (true)
   {
@@ -249,6 +349,10 @@ int atbuiltin_rwlock_rlock(atbuiltin_rwlock_t *lock)
     }
     __sync_sub_and_fetch(&lock->lock_body, 1);
     pthread_mutex_lock(&lock->mutex);
+    if (lock->write_waiting)
+    {
+      pthread_cond_wait(&lock->cond, &lock->mutex);
+    }
     pthread_mutex_unlock(&lock->mutex);
   }
 }
@@ -270,6 +374,11 @@ int atbuiltin_rwlock_trywlock(atbuiltin_rwlock_t *lock)
   if (__sync_bool_compare_and_swap(&lock->lock_body, 0, INT_MIN))
 #endif
   {
+    if (lock->write_counting)
+    {
+      __sync_add_and_fetch(&lock->writer_count, 1);
+    }
+    lock->write_waiting = true;
     /* lock success */
     return 0;
   }
@@ -283,6 +392,10 @@ int atbuiltin_rwlock_timedwlock(atbuiltin_rwlock_t *lock, const struct timespec 
   struct timespec tss, tsc, tsr;
   tsr = *timeout;
   clock_gettime(CLOCK_MONOTONIC, &tss);
+  if (lock->write_counting)
+  {
+    __sync_add_and_fetch(&lock->writer_count, 1);
+  }
   if (pthread_mutex_trylock(&lock->mutex))
   {
     if ((res = pthread_mutex_timedlock(&lock->mutex, &tsr)))
@@ -305,6 +418,13 @@ int atbuiltin_rwlock_timedwlock(atbuiltin_rwlock_t *lock, const struct timespec 
     clock_gettime(CLOCK_MONOTONIC, &tsc);
     if (timespec_sub(&tsr, &tss, &tsc))
     {
+      if (
+        !lock->write_counting ||
+        __sync_sub_and_fetch(&lock->writer_count, 1) == 0
+      ) {
+        lock->write_waiting = false;
+        pthread_cond_broadcast(&lock->cond);
+      }
       pthread_mutex_unlock(&lock->mutex);
       return ETIMEDOUT;
     }
@@ -317,13 +437,14 @@ int atbuiltin_rwlock_timedwlock(atbuiltin_rwlock_t *lock, const struct timespec 
 
 int atbuiltin_rwlock_wlock(atbuiltin_rwlock_t *lock)
 {
-  struct timespec interval;
-  if (lock->write_lock_interval)
+  if (lock->write_counting)
   {
-    get_timespec_from_nanosec(&interval, lock->write_lock_interval);
+    __sync_add_and_fetch(&lock->writer_count, 1);
   }
   if (pthread_mutex_trylock(&lock->mutex))
+  {
     pthread_mutex_lock(&lock->mutex);
+  }
   lock->write_waiting = true;
   while (true)
   {
@@ -353,7 +474,14 @@ int atbuiltin_rwlock_wunlock(atbuiltin_rwlock_t *lock)
     if (__sync_bool_compare_and_swap(&lock->lock_body, INT_MIN, 0))
 #endif
     {
-      lock->write_waiting = false;
+      if (
+        !lock->write_counting ||
+        __sync_sub_and_fetch(&lock->writer_count, 1) == 0
+        
+      ) {
+        lock->write_waiting = false;
+        pthread_cond_broadcast(&lock->cond);
+      }
       pthread_mutex_unlock(&lock->mutex);
       /* unlock success */
       return 0;

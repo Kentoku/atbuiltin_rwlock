@@ -35,6 +35,7 @@
 struct atbuiltin_rwlock_attr_t
 {
   pthread_mutexattr_t mutex_attr;
+  pthread_condattr_t cond_attr;
   int rwlock_attr;
   unsigned long long int write_lock_interval;
 };
@@ -43,16 +44,22 @@ struct atbuiltin_rwlock_t
 {
 #ifdef ATBUILTIN_RWLOCK_USE_LONG_LONG_FOR_LOCK_BODY
   long long int lock_body;
+  unsigned long long int writer_count;
 #else
   int lock_body;
+  unsigned int writer_count;
 #endif
   unsigned long long int write_lock_interval;
   struct timespec write_lock_interval_ts;
-  bool write_waiting;
+  volatile bool write_waiting;
   bool write_priority;
+  bool write_counting;
   pthread_mutex_t mutex;
+  pthread_cond_t cond;
 };
 
+int atbuiltin_rwlockattr_setpshared_cond(atbuiltin_rwlock_attr_t *attr, int pshared);
+int atbuiltin_rwlockattr_getpshared_cond(atbuiltin_rwlock_attr_t *attr, int *pshared);
 int atbuiltin_rwlockattr_init(atbuiltin_rwlock_attr_t *attr);
 int atbuiltin_rwlockattr_destroy(atbuiltin_rwlock_attr_t *attr);
 int atbuiltin_rwlockattr_settype_mutex(atbuiltin_rwlock_attr_t *attr, int kind);
