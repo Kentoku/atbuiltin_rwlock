@@ -20,9 +20,9 @@ Test source codes are in test directory.
   * rlock   0%, wlock 100% : 34 seconds
 
 2. atbuiltin_rwlock (use PTHREAD_RWLOCK_PREFER_WRITER_NONRECURSIVE_NP)
-  * rlock 100%, wlock   0% :  7 seconds
-  * rlock  90%, wlock  10% : 10 seconds
-  * rlock   0%, wlock 100% : 30 seconds
+  * rlock 100%, wlock   0% :  5 seconds
+  * rlock  90%, wlock  10% :  8 seconds
+  * rlock   0%, wlock 100% : 37 seconds
 
 ### Limitations ###
 If over the following number of threads use this functions at same time, please set -DATBUILTIN_RWLOCK_USE_LONG_LONG_FOR_LOCK_BODY option for building.
