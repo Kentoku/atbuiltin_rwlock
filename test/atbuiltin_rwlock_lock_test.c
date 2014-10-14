@@ -37,13 +37,13 @@ volatile bool wlocking;
 
 void *worker_thread(void *arg)
 {
-  int i;
+  int i, ret;
   int worker_id = *((int *) arg);
   if ((worker_id % 100) < 10)
   {
     for (i = 0; i < 1000000; i++)
     {
-      if (!atbuiltin_rwlock_wlock(&rwlock))
+      if (!(ret = atbuiltin_rwlock_wlock(&rwlock)))
       {
         wlocking = true;
         if (rlocking)
@@ -51,13 +51,13 @@ void *worker_thread(void *arg)
         wlocking = false;
         atbuiltin_rwlock_wunlock(&rwlock);
       } else {
-        printf("write lock timeout %d\n", worker_id);
+        printf("write lock thread [%d] got %d\n", worker_id, ret);
       }
     }
   } else {
     for (i = 0; i < 1000000; i++)
     {
-      if (!atbuiltin_rwlock_rlock(&rwlock))
+      if (!(ret = atbuiltin_rwlock_rlock(&rwlock)))
       {
         rlocking = true;
         if (wlocking)
@@ -65,10 +65,11 @@ void *worker_thread(void *arg)
         rlocking = false;
         atbuiltin_rwlock_runlock(&rwlock);
       } else {
-        printf("read lock timeout %d\n", worker_id);
+        printf("read lock thread [%d] got %d\n", worker_id, ret);
       }
     }
   }
+  printf("%d is finished\n", worker_id);
 }
 
 int main(int argc, char **argv)
@@ -85,6 +86,8 @@ int main(int argc, char **argv)
   wlocking = false;
   pthread_attr_init(&pthread_attr);
   atbuiltin_rwlockattr_init(&attr);
+/*  atbuiltin_rwlockattr_settype_np(&attr, PTHREAD_RWLOCK_PREFER_READER_NP); */
+/*  atbuiltin_rwlockattr_settype_np(&attr, PTHREAD_RWLOCK_PREFER_WRITER_NP); */
   atbuiltin_rwlockattr_settype_np(&attr, PTHREAD_RWLOCK_PREFER_WRITER_NONRECURSIVE_NP);
   atbuiltin_rwlock_init(&rwlock, &attr);
 

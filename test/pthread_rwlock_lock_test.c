@@ -28,58 +28,50 @@
   ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. */
 
 #include <stdio.h>
-#include <errno.h>
 #include <time.h>
-#include <atbuiltin_rwlock.h>
+#include <pthread.h>
 
-atbuiltin_rwlock_t rwlock;
+pthread_rwlock_t rwlock;
 volatile bool rlocking;
 volatile bool wlocking;
 
 void *worker_thread(void *arg)
 {
-  int i, res;
+  int i, ret;
   int worker_id = *((int *) arg);
-  unsigned int busy_cnt = 0;
-  if ((worker_id % 100) < 10)
+/*  if ((worker_id % 100) < 100) *//* 100% write */
+/*  if ((worker_id % 100) < 0) *//* 100% read */
+  if ((worker_id % 100) < 10) /* 10% write 90% read */
   {
     for (i = 0; i < 1000000; i++)
     {
-      do {
-        if (!(res = atbuiltin_rwlock_trywlock(&rwlock)))
-        {
-          wlocking = true;
-          if (rlocking)
-            printf("read locked after write locking\n");
-          wlocking = false;
-          atbuiltin_rwlock_wunlock(&rwlock);
-        } else if (res != EBUSY) {
-          printf("write lock timeout %d\n", worker_id);
-        } else {
-          busy_cnt++;
-        }
-      } while (res == EBUSY);
+      if (!(ret = pthread_rwlock_wrlock(&rwlock)))
+      {
+        wlocking = true;
+        if (rlocking)
+          printf("read locked after write locking\n");
+        wlocking = false;
+        pthread_rwlock_unlock(&rwlock);
+      } else {
+        printf("write lock thread [%d] got %d\n", worker_id, ret);
+      }
     }
   } else {
     for (i = 0; i < 1000000; i++)
     {
-      do {
-        if (!(res = atbuiltin_rwlock_tryrlock(&rwlock)))
-        {
-          rlocking = true;
-          if (wlocking)
-            printf("write locked after read locking\n");
-          rlocking = false;
-          atbuiltin_rwlock_runlock(&rwlock);
-        } else if (res != EBUSY) {
-          printf("read lock timeout %d\n", worker_id);
-        } else {
-          busy_cnt++;
-        }
-      } while (res == EBUSY);
+      if (!(ret = pthread_rwlock_rdlock(&rwlock)))
+      {
+        rlocking = true;
+        if (wlocking)
+          printf("write locked after read locking\n");
+        rlocking = false;
+        pthread_rwlock_unlock(&rwlock);
+      } else {
+        printf("read lock thread [%d] got %d\n", worker_id, ret);
+      }
     }
   }
-  printf("%d busy count is %u\n", worker_id, busy_cnt);
+  printf("%d is finished\n", worker_id);
 }
 
 int main(int argc, char **argv)
@@ -89,24 +81,35 @@ int main(int argc, char **argv)
   int worker_id[100];
   int i;
   pthread_t threads[100];
-  pthread_attr_t pthread_attr;
-  atbuiltin_rwlock_attr_t attr;
+  pthread_attr_t attr;
+  pthread_rwlockattr_t rwlockattr;
 
-  rlocking = false;
-  wlocking = false;
-  pthread_attr_init(&pthread_attr);
-  atbuiltin_rwlockattr_init(&attr);
-/*  atbuiltin_rwlockattr_settype_np(&attr, PTHREAD_RWLOCK_PREFER_READER_NP); */
-/*  atbuiltin_rwlockattr_settype_np(&attr, PTHREAD_RWLOCK_PREFER_WRITER_NP); */
-  atbuiltin_rwlockattr_settype_np(&attr, PTHREAD_RWLOCK_PREFER_WRITER_NONRECURSIVE_NP);
-  atbuiltin_rwlock_init(&rwlock, &attr);
+  pthread_attr_init(&attr);
+
+  if (pthread_rwlockattr_init(&rwlockattr) < 0)
+  {
+    printf("pthread_rwlockattr_init\n");
+    return 1;
+  }
+/*  if (pthread_rwlockattr_setkind_np(&rwlockattr, PTHREAD_RWLOCK_PREFER_READER_NP) < 0) */
+/*  if (pthread_rwlockattr_setkind_np(&rwlockattr, PTHREAD_RWLOCK_PREFER_WRITER_NP) < 0) */
+  if (pthread_rwlockattr_setkind_np(&rwlockattr, PTHREAD_RWLOCK_PREFER_WRITER_NONRECURSIVE_NP) < 0)
+  {
+    printf("pthread_rwlockattr_setkind_np\n");
+    return 1;
+  }
+  if (pthread_rwlock_init(&rwlock, &rwlockattr) < 0)
+  {
+    printf("pthread_rwlock_init\n");
+    return 1;
+  }
 
   timer = time(NULL);
   printf("%s\n", ctime(&timer));
   for (i = 0; i < 100; i++)
   {
     worker_id[i] = i;
-    if (pthread_create(&threads[i], &pthread_attr, worker_thread, &worker_id[i]))
+    if (pthread_create(&threads[i], &attr, worker_thread, &worker_id[i]))
     {
       return 1;
     }
@@ -119,8 +122,6 @@ int main(int argc, char **argv)
 
   timer = time(NULL);
   printf("%s\n", ctime(&timer));
-  pthread_attr_destroy(&pthread_attr);
-  atbuiltin_rwlock_destroy(&rwlock);
-  atbuiltin_rwlockattr_destroy(&attr);
+  pthread_rwlock_destroy(&rwlock);
   return 0;
 }

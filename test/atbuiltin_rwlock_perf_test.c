@@ -75,6 +75,8 @@ int main(int argc, char **argv)
 
   pthread_attr_init(&pthread_attr);
   atbuiltin_rwlockattr_init(&attr);
+/*  atbuiltin_rwlockattr_settype_np(&attr, PTHREAD_RWLOCK_PREFER_READER_NP); */
+/*  atbuiltin_rwlockattr_settype_np(&attr, PTHREAD_RWLOCK_PREFER_WRITER_NP); */
   atbuiltin_rwlockattr_settype_np(&attr, PTHREAD_RWLOCK_PREFER_WRITER_NONRECURSIVE_NP);
   atbuiltin_rwlock_init(&rwlock, &attr);
 

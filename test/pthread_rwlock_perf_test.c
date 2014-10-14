@@ -75,15 +75,20 @@ int main(int argc, char **argv)
 
   pthread_attr_init(&attr);
 
-  if (pthread_rwlockattr_init(&rwlockattr) < 0) {
+  if (pthread_rwlockattr_init(&rwlockattr) < 0)
+  {
     printf("pthread_rwlockattr_init\n");
     return 1;
   }
-  if (pthread_rwlockattr_setkind_np(&rwlockattr, PTHREAD_RWLOCK_PREFER_WRITER_NONRECURSIVE_NP) < 0) {
+/*  if (pthread_rwlockattr_setkind_np(&rwlockattr, PTHREAD_RWLOCK_PREFER_READER_NP) < 0) */
+/*  if (pthread_rwlockattr_setkind_np(&rwlockattr, PTHREAD_RWLOCK_PREFER_WRITER_NP) < 0) */
+  if (pthread_rwlockattr_setkind_np(&rwlockattr, PTHREAD_RWLOCK_PREFER_WRITER_NONRECURSIVE_NP) < 0)
+  {
     printf("pthread_rwlockattr_setkind_np\n");
     return 1;
   }
-  if (pthread_rwlock_init(&rwlock, &rwlockattr) < 0) {
+  if (pthread_rwlock_init(&rwlock, &rwlockattr) < 0)
+  {
     printf("pthread_rwlock_init\n");
     return 1;
   }
