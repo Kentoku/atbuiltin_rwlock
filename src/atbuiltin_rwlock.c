@@ -392,15 +392,20 @@ int atbuiltin_rwlock_timedwlock(atbuiltin_rwlock_t *lock, const struct timespec 
   struct timespec tss, tsc, tsr;
   tsr = *timeout;
   clock_gettime(CLOCK_MONOTONIC, &tss);
-  if (lock->write_counting)
-  {
-    __sync_add_and_fetch(&lock->writer_count, 1);
-  }
   if (pthread_mutex_trylock(&lock->mutex))
   {
     if ((res = pthread_mutex_timedlock(&lock->mutex, &tsr)))
     {
       return res;
+    }
+  }
+  if (lock->write_counting)
+  {
+    __sync_add_and_fetch(&lock->writer_count, 1);
+    if (lock->write_waiting)
+    {
+      /* lock success */
+      return 0;
     }
   }
   lock->write_waiting = true;
@@ -445,6 +450,13 @@ int atbuiltin_rwlock_wlock(atbuiltin_rwlock_t *lock)
   {
     pthread_mutex_lock(&lock->mutex);
   }
+  if (
+    lock->write_counting &&
+    lock->write_waiting
+  ) {
+    /* lock success */
+    return 0;
+  }
   lock->write_waiting = true;
   while (true)
   {
@@ -466,25 +478,39 @@ int atbuiltin_rwlock_wlock(atbuiltin_rwlock_t *lock)
 
 int atbuiltin_rwlock_wunlock(atbuiltin_rwlock_t *lock)
 {
-  while (true)
+  if (lock->write_counting)
   {
-#ifdef ATBUILTIN_RWLOCK_USE_LONG_LONG_FOR_LOCK_BODY
-    if (__sync_bool_compare_and_swap(&lock->lock_body, LLONG_MIN, 0))
-#else
-    if (__sync_bool_compare_and_swap(&lock->lock_body, INT_MIN, 0))
-#endif
+    if (__sync_sub_and_fetch(&lock->writer_count, 1) == 0)
     {
-      if (
-        !lock->write_counting ||
-        __sync_sub_and_fetch(&lock->writer_count, 1) == 0
-        
-      ) {
+#ifdef ATBUILTIN_RWLOCK_USE_LONG_LONG_FOR_LOCK_BODY
+      while (!__sync_bool_compare_and_swap(&lock->lock_body, LLONG_MIN, 0))
+#else
+      while (!__sync_bool_compare_and_swap(&lock->lock_body, INT_MIN, 0))
+#endif
+      {
+        ;
+      }
+      lock->write_waiting = false;
+      pthread_cond_broadcast(&lock->cond);
+    }
+    pthread_mutex_unlock(&lock->mutex);
+    /* unlock success */
+    return 0;
+  } else {
+    while (true)
+    {
+#ifdef ATBUILTIN_RWLOCK_USE_LONG_LONG_FOR_LOCK_BODY
+      if (__sync_bool_compare_and_swap(&lock->lock_body, LLONG_MIN, 0))
+#else
+      if (__sync_bool_compare_and_swap(&lock->lock_body, INT_MIN, 0))
+#endif
+      {
         lock->write_waiting = false;
         pthread_cond_broadcast(&lock->cond);
+        pthread_mutex_unlock(&lock->mutex);
+        /* unlock success */
+        return 0;
       }
-      pthread_mutex_unlock(&lock->mutex);
-      /* unlock success */
-      return 0;
     }
   }
 }
