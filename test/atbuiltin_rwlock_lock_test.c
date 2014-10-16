@@ -31,6 +31,14 @@
 #include <time.h>
 #include <atbuiltin_rwlock.h>
 
+#define NUMBER_OF_THREADS 100
+#define NUMBER_OF_LOOPS 1000000
+/*
+#define OPTION_OF_RWLOCKATTR PTHREAD_RWLOCK_PREFER_READER_NP
+#define OPTION_OF_RWLOCKATTR PTHREAD_RWLOCK_PREFER_WRITER_NP
+*/
+#define OPTION_OF_RWLOCKATTR PTHREAD_RWLOCK_PREFER_WRITER_NONRECURSIVE_NP
+
 atbuiltin_rwlock_t rwlock;
 volatile bool rlocking;
 volatile bool wlocking;
@@ -39,9 +47,9 @@ void *worker_thread(void *arg)
 {
   int i, ret;
   int worker_id = *((int *) arg);
-  if ((worker_id % 100) < 10)
+  if ((worker_id % NUMBER_OF_THREADS) < NUMBER_OF_THREADS / 10)
   {
-    for (i = 0; i < 1000000; i++)
+    for (i = 0; i < NUMBER_OF_LOOPS; i++)
     {
       if (!(ret = atbuiltin_rwlock_wlock(&rwlock)))
       {
@@ -55,7 +63,7 @@ void *worker_thread(void *arg)
       }
     }
   } else {
-    for (i = 0; i < 1000000; i++)
+    for (i = 0; i < NUMBER_OF_LOOPS; i++)
     {
       if (!(ret = atbuiltin_rwlock_rlock(&rwlock)))
       {
@@ -76,9 +84,9 @@ int main(int argc, char **argv)
 {
   time_t timer;
   struct tm *date;
-  int worker_id[100];
+  int worker_id[NUMBER_OF_THREADS];
   int i;
-  pthread_t threads[100];
+  pthread_t threads[NUMBER_OF_THREADS];
   pthread_attr_t pthread_attr;
   atbuiltin_rwlock_attr_t attr;
 
@@ -86,14 +94,12 @@ int main(int argc, char **argv)
   wlocking = false;
   pthread_attr_init(&pthread_attr);
   atbuiltin_rwlockattr_init(&attr);
-/*  atbuiltin_rwlockattr_settype_np(&attr, PTHREAD_RWLOCK_PREFER_READER_NP); */
-/*  atbuiltin_rwlockattr_settype_np(&attr, PTHREAD_RWLOCK_PREFER_WRITER_NP); */
-  atbuiltin_rwlockattr_settype_np(&attr, PTHREAD_RWLOCK_PREFER_WRITER_NONRECURSIVE_NP);
+  atbuiltin_rwlockattr_settype_np(&attr, OPTION_OF_RWLOCKATTR);
   atbuiltin_rwlock_init(&rwlock, &attr);
 
   timer = time(NULL);
   printf("%s\n", ctime(&timer));
-  for (i = 0; i < 100; i++)
+  for (i = 0; i < NUMBER_OF_THREADS; i++)
   {
     worker_id[i] = i;
     if (pthread_create(&threads[i], &pthread_attr, worker_thread, &worker_id[i]))
@@ -102,7 +108,7 @@ int main(int argc, char **argv)
     }
   }
 
-  for (i = 0; i < 100; i++)
+  for (i = 0; i < NUMBER_OF_THREADS; i++)
   {
     pthread_join(threads[i], NULL);
   }
