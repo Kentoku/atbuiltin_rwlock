@@ -14,15 +14,35 @@ Test source codes are in test directory.
 ##### Test results #####
 * 100 threads 1000000 loops
 
-1. pthread_rwlock (use PTHREAD_RWLOCK_PREFER_WRITER_NONRECURSIVE_NP)
-  * rlock 100%, wlock   0% : 23 seconds
-  * rlock  90%, wlock  10% : 25 seconds
-  * rlock   0%, wlock 100% : 34 seconds
+1. atbuiltin_rwlock (use ATBUILTIN_RWLOCK_READ_PRIORITY)
+  * rlock 100%, wlock   0% :  5 seconds
+  * rlock  90%, wlock  10% :  9 seconds
+  * rlock   0%, wlock 100% : 52 seconds
 
-2. atbuiltin_rwlock (use ATBUILTIN_RWLOCK_WRITE_PRIORITY)
+2. atbuiltin_rwlock (use ATBUILTIN_RWLOCK_NO_PRIORITY)
+  * rlock 100%, wlock   0% :  5 seconds
+  * rlock  90%, wlock  10% :  9 seconds
+  * rlock   0%, wlock 100% : 52 seconds
+
+3. atbuiltin_rwlock (use ATBUILTIN_RWLOCK_WRITE_PRIORITY)
   * rlock 100%, wlock   0% :  5 seconds
   * rlock  90%, wlock  10% :  7 seconds
   * rlock   0%, wlock 100% : 27 seconds
+
+4. pthread_rwlock (use PTHREAD_RWLOCK_PREFER_READER_NP)
+  * rlock 100%, wlock   0% : 23 seconds
+  * rlock  90%, wlock  10% : 25 seconds
+  * rlock   0%, wlock 100% : 33 seconds
+
+5. pthread_rwlock (use PTHREAD_RWLOCK_PREFER_WRITER_NP)
+  * rlock 100%, wlock   0% : 24 seconds
+  * rlock  90%, wlock  10% : 24 seconds
+  * rlock   0%, wlock 100% : 31 seconds
+
+6. pthread_rwlock (use PTHREAD_RWLOCK_PREFER_WRITER_NONRECURSIVE_NP)
+  * rlock 100%, wlock   0% : 23 seconds
+  * rlock  90%, wlock  10% : 25 seconds
+  * rlock   0%, wlock 100% : 34 seconds
 
 ### Limitations ###
 If over the following number of threads use this functions at same time, please set -DATBUILTIN_RWLOCK_USE_LONG_LONG_FOR_LOCK_BODY option for building.
