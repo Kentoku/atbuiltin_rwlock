@@ -32,6 +32,10 @@
 #include <pthread.h>
 #include <time.h>
 
+#define ATBUILTIN_RWLOCK_READ_PRIORITY  0
+#define ATBUILTIN_RWLOCK_NO_PRIORITY    1
+#define ATBUILTIN_RWLOCK_WRITE_PRIORITY 2
+
 struct atbuiltin_rwlock_attr_t
 {
   pthread_mutexattr_t mutex_attr;

@@ -82,7 +82,7 @@ static bool timespec_sub(struct timespec *tsr, const struct timespec *tss, const
 int atbuiltin_rwlockattr_init(atbuiltin_rwlock_attr_t *attr)
 {
   int ret;
-  attr->rwlock_attr = PTHREAD_RWLOCK_PREFER_READER_NP;
+  attr->rwlock_attr = ATBUILTIN_RWLOCK_READ_PRIORITY;
   attr->write_lock_interval = 0;
   if ((ret = pthread_condattr_init(&attr->cond_attr)))
     goto error_condattr_init;
@@ -130,9 +130,9 @@ int atbuiltin_rwlockattr_settype_np(atbuiltin_rwlock_attr_t *attr, int kind)
 {
   switch (kind)
   {
-    case PTHREAD_RWLOCK_PREFER_READER_NP:
-    case PTHREAD_RWLOCK_PREFER_WRITER_NP:
-    case PTHREAD_RWLOCK_PREFER_WRITER_NONRECURSIVE_NP:
+    case ATBUILTIN_RWLOCK_READ_PRIORITY:
+    case ATBUILTIN_RWLOCK_NO_PRIORITY:
+    case ATBUILTIN_RWLOCK_WRITE_PRIORITY:
       break;
     default:
       return EINVAL;
@@ -169,13 +169,13 @@ int atbuiltin_rwlock_init(atbuiltin_rwlock_t *lock, const atbuiltin_rwlock_attr_
   {
     lock->write_lock_interval = attr->write_lock_interval;
     get_timespec_from_nanosec(&lock->write_lock_interval_ts, lock->write_lock_interval);
-    if (attr->rwlock_attr == PTHREAD_RWLOCK_PREFER_READER_NP)
+    if (attr->rwlock_attr == ATBUILTIN_RWLOCK_READ_PRIORITY)
     {
       lock->write_priority = false;
       lock->write_counting = false;
     } else {
       lock->write_priority = true;
-      if (attr->rwlock_attr == PTHREAD_RWLOCK_PREFER_WRITER_NONRECURSIVE_NP)
+      if (attr->rwlock_attr == ATBUILTIN_RWLOCK_WRITE_PRIORITY)
       {
         lock->write_counting = true;
       }

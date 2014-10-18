@@ -19,7 +19,7 @@ Test source codes are in test directory.
   * rlock  90%, wlock  10% : 25 seconds
   * rlock   0%, wlock 100% : 34 seconds
 
-2. atbuiltin_rwlock (use PTHREAD_RWLOCK_PREFER_WRITER_NONRECURSIVE_NP)
+2. atbuiltin_rwlock (use ATBUILTIN_RWLOCK_WRITE_PRIORITY)
   * rlock 100%, wlock   0% :  5 seconds
   * rlock  90%, wlock  10% :  7 seconds
   * rlock   0%, wlock 100% : 27 seconds
