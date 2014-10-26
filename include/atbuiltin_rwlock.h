@@ -49,17 +49,23 @@ struct atbuiltin_rwlock_t
 #ifdef ATBUILTIN_RWLOCK_USE_LONG_LONG_FOR_LOCK_BODY
   long long int lock_body;
   unsigned long long int writer_count;
+  unsigned long long int tr_waiter_count;
 #else
   int lock_body;
   unsigned int writer_count;
+  unsigned int tr_waiter_count;
 #endif
   unsigned long long int write_lock_interval;
   struct timespec write_lock_interval_ts;
-  volatile bool write_waiting;
-  bool write_priority;
-  bool write_counting;
+  bool read_waiting;
+  bool write_waiting;
   pthread_mutex_t mutex;
   pthread_cond_t cond;
+  int (*timedrlock)(atbuiltin_rwlock_t *lock, const struct timespec *timeout);
+  int (*rlock)(atbuiltin_rwlock_t *lock);
+  int (*timedwlock)(atbuiltin_rwlock_t *lock, const struct timespec *timeout);
+  int (*wlock)(atbuiltin_rwlock_t *lock);
+  int (*wunlock)(atbuiltin_rwlock_t *lock);
 };
 
 int atbuiltin_rwlockattr_setpshared_cond(atbuiltin_rwlock_attr_t *attr, int pshared);
@@ -68,19 +74,19 @@ int atbuiltin_rwlockattr_init(atbuiltin_rwlock_attr_t *attr);
 int atbuiltin_rwlockattr_destroy(atbuiltin_rwlock_attr_t *attr);
 int atbuiltin_rwlockattr_settype_mutex(atbuiltin_rwlock_attr_t *attr, int kind);
 int atbuiltin_rwlockattr_gettype_mutex(atbuiltin_rwlock_attr_t *attr, int *kind);
-int atbuiltin_rwlockattr_settype_np(atbuiltin_rwlock_attr_t *attr, int kind);
-int atbuiltin_rwlockattr_gettype_np(atbuiltin_rwlock_attr_t *attr, int *kind);
+int atbuiltin_rwlockattr_settype_priority(atbuiltin_rwlock_attr_t *attr, int kind);
+int atbuiltin_rwlockattr_gettype_priority(atbuiltin_rwlock_attr_t *attr, int *kind);
 int atbuiltin_rwlockattr_settype_write_lock_interval(atbuiltin_rwlock_attr_t *attr, unsigned long long int interval);
 int atbuiltin_rwlockattr_gettype_write_lock_interval(atbuiltin_rwlock_attr_t *attr, unsigned long long int *interval);
 int atbuiltin_rwlock_init(atbuiltin_rwlock_t *lock, const atbuiltin_rwlock_attr_t *attr);
 int atbuiltin_rwlock_destroy(atbuiltin_rwlock_t *lock);
 int atbuiltin_rwlock_tryrlock(atbuiltin_rwlock_t *lock);
-int atbuiltin_rwlock_timedrlock(atbuiltin_rwlock_t *lock, const struct timespec *timeout);
-int atbuiltin_rwlock_rlock(atbuiltin_rwlock_t *lock);
+#define atbuiltin_rwlock_timedrlock(A, B) (A)->timedrlock(A, B)
+#define atbuiltin_rwlock_rlock(A) (A)->rlock(A)
 int atbuiltin_rwlock_runlock(atbuiltin_rwlock_t *lock);
 int atbuiltin_rwlock_trywlock(atbuiltin_rwlock_t *lock);
-int atbuiltin_rwlock_timedwlock(atbuiltin_rwlock_t *lock, const struct timespec *timeout);
-int atbuiltin_rwlock_wlock(atbuiltin_rwlock_t *lock);
-int atbuiltin_rwlock_wunlock(atbuiltin_rwlock_t *lock);
+#define atbuiltin_rwlock_timedwlock(A, B) (A)->timedwlock(A, B)
+#define atbuiltin_rwlock_wlock(A) (A)->wlock(A)
+#define atbuiltin_rwlock_wunlock(A) (A)->wunlock(A)
 
 #endif /* _ATBUILTIN_RWLOCK_H */

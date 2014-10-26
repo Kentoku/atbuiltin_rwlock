@@ -31,6 +31,22 @@
 #include <limits.h>
 #include <atbuiltin_rwlock.h>
 
+static int atbuiltin_rwlock_timedrlock_read_priority(atbuiltin_rwlock_t *lock, const struct timespec *timeout);
+static int atbuiltin_rwlock_rlock_read_priority(atbuiltin_rwlock_t *lock);
+static int atbuiltin_rwlock_timedwlock_read_priority(atbuiltin_rwlock_t *lock, const struct timespec *timeout);
+static int atbuiltin_rwlock_wlock_read_priority(atbuiltin_rwlock_t *lock);
+static int atbuiltin_rwlock_wunlock_read_priority(atbuiltin_rwlock_t *lock);
+static int atbuiltin_rwlock_timedrlock_no_priority(atbuiltin_rwlock_t *lock, const struct timespec *timeout);
+static int atbuiltin_rwlock_rlock_no_priority(atbuiltin_rwlock_t *lock);
+static int atbuiltin_rwlock_timedwlock_no_priority(atbuiltin_rwlock_t *lock, const struct timespec *timeout);
+static int atbuiltin_rwlock_wlock_no_priority(atbuiltin_rwlock_t *lock);
+static int atbuiltin_rwlock_wunlock_no_priority(atbuiltin_rwlock_t *lock);
+static int atbuiltin_rwlock_timedrlock_write_priority(atbuiltin_rwlock_t *lock, const struct timespec *timeout);
+static int atbuiltin_rwlock_rlock_write_priority(atbuiltin_rwlock_t *lock);
+static int atbuiltin_rwlock_timedwlock_write_priority(atbuiltin_rwlock_t *lock, const struct timespec *timeout);
+static int atbuiltin_rwlock_wlock_write_priority(atbuiltin_rwlock_t *lock);
+static int atbuiltin_rwlock_wunlock_write_priority(atbuiltin_rwlock_t *lock);
+
 static void get_timespec_from_nanosec(struct timespec *ts, unsigned long long int nanosec)
 {
   ts->tv_sec = nanosec / 1000000000;
@@ -126,7 +142,7 @@ int atbuiltin_rwlockattr_gettype_mutex(atbuiltin_rwlock_attr_t *attr, int *kind)
   return pthread_mutexattr_gettype(&attr->mutex_attr, kind);
 }
 
-int atbuiltin_rwlockattr_settype_np(atbuiltin_rwlock_attr_t *attr, int kind)
+int atbuiltin_rwlockattr_settype_priority(atbuiltin_rwlock_attr_t *attr, int kind)
 {
   switch (kind)
   {
@@ -141,7 +157,7 @@ int atbuiltin_rwlockattr_settype_np(atbuiltin_rwlock_attr_t *attr, int kind)
   return 0;
 }
 
-int atbuiltin_rwlockattr_gettype_np(atbuiltin_rwlock_attr_t *attr, int *kind)
+int atbuiltin_rwlockattr_gettype_priority(atbuiltin_rwlock_attr_t *attr, int *kind)
 {
   *kind = attr->rwlock_attr;
   return 0;
@@ -164,6 +180,8 @@ int atbuiltin_rwlock_init(atbuiltin_rwlock_t *lock, const atbuiltin_rwlock_attr_
   int ret;
   lock->lock_body = 0;
   lock->writer_count = 0;
+  lock->tr_waiter_count = 0;
+  lock->read_waiting = false;
   lock->write_waiting = false;
   if (attr)
   {
@@ -171,13 +189,25 @@ int atbuiltin_rwlock_init(atbuiltin_rwlock_t *lock, const atbuiltin_rwlock_attr_
     get_timespec_from_nanosec(&lock->write_lock_interval_ts, lock->write_lock_interval);
     if (attr->rwlock_attr == ATBUILTIN_RWLOCK_READ_PRIORITY)
     {
-      lock->write_priority = false;
-      lock->write_counting = false;
+      lock->timedrlock = atbuiltin_rwlock_timedrlock_read_priority;
+      lock->rlock = atbuiltin_rwlock_rlock_read_priority;
+      lock->timedwlock = atbuiltin_rwlock_timedwlock_read_priority;
+      lock->wlock = atbuiltin_rwlock_wlock_read_priority;
+      lock->wunlock = atbuiltin_rwlock_wunlock_read_priority;
     } else {
-      lock->write_priority = true;
       if (attr->rwlock_attr == ATBUILTIN_RWLOCK_WRITE_PRIORITY)
       {
-        lock->write_counting = true;
+        lock->timedrlock = atbuiltin_rwlock_timedrlock_write_priority;
+        lock->rlock = atbuiltin_rwlock_rlock_write_priority;
+        lock->timedwlock = atbuiltin_rwlock_timedwlock_write_priority;
+        lock->wlock = atbuiltin_rwlock_wlock_write_priority;
+        lock->wunlock = atbuiltin_rwlock_wunlock_write_priority;
+      } else {
+        lock->timedrlock = atbuiltin_rwlock_timedrlock_no_priority;
+        lock->rlock = atbuiltin_rwlock_rlock_no_priority;
+        lock->timedwlock = atbuiltin_rwlock_timedwlock_no_priority;
+        lock->wlock = atbuiltin_rwlock_wlock_no_priority;
+        lock->wunlock = atbuiltin_rwlock_wunlock_no_priority;
       }
     }
     if ((ret = pthread_cond_init(&lock->cond, &attr->cond_attr)))
@@ -187,8 +217,11 @@ int atbuiltin_rwlock_init(atbuiltin_rwlock_t *lock, const atbuiltin_rwlock_attr_
   } else {
     lock->write_lock_interval = 0;
     get_timespec_from_nanosec(&lock->write_lock_interval_ts, lock->write_lock_interval);
-    lock->write_priority = false;
-    lock->write_counting = false;
+    lock->timedrlock = atbuiltin_rwlock_timedrlock_read_priority;
+    lock->rlock = atbuiltin_rwlock_rlock_read_priority;
+    lock->timedwlock = atbuiltin_rwlock_timedwlock_read_priority;
+    lock->wlock = atbuiltin_rwlock_wlock_read_priority;
+    lock->wunlock = atbuiltin_rwlock_wunlock_read_priority;
     if ((ret = pthread_cond_init(&lock->cond, NULL)))
       goto error_cond_init;
     if ((ret = pthread_mutex_init(&lock->mutex, NULL)))
@@ -220,12 +253,9 @@ int atbuiltin_rwlock_tryrlock(atbuiltin_rwlock_t *lock)
 #else
   int cnt;
 #endif
-  if (lock->write_priority)
+  if (lock->write_waiting)
   {
-    if (lock->write_waiting)
-    {
-      return EBUSY;
-    }
+    return EBUSY;
   }
   cnt = __sync_add_and_fetch(&lock->lock_body, 1);
   if (cnt > 0)
@@ -237,7 +267,68 @@ int atbuiltin_rwlock_tryrlock(atbuiltin_rwlock_t *lock)
   return EBUSY;
 }
 
+/*
 int atbuiltin_rwlock_timedrlock(atbuiltin_rwlock_t *lock, const struct timespec *timeout)
+{
+  return lock->timedrlock(lock, timeout);
+}
+
+int atbuiltin_rwlock_rlock(atbuiltin_rwlock_t *lock)
+{
+  return lock->rlock(lock);
+}
+*/
+
+int atbuiltin_rwlock_runlock(atbuiltin_rwlock_t *lock)
+{
+  __sync_sub_and_fetch(&lock->lock_body, 1);
+  return 0;
+}
+
+int atbuiltin_rwlock_trywlock(atbuiltin_rwlock_t *lock)
+{
+  int ret;
+  if ((ret = pthread_mutex_trylock(&lock->mutex)))
+    return ret;
+  if (lock->write_waiting)
+  {
+    __sync_add_and_fetch(&lock->writer_count, 1);
+    /* lock success */
+    return 0;
+  }
+#ifdef ATBUILTIN_RWLOCK_USE_LONG_LONG_FOR_LOCK_BODY
+  if (__sync_bool_compare_and_swap(&lock->lock_body, 0, LLONG_MIN))
+#else
+  if (__sync_bool_compare_and_swap(&lock->lock_body, 0, INT_MIN))
+#endif
+  {
+    __sync_add_and_fetch(&lock->writer_count, 1);
+    lock->write_waiting = true;
+    /* lock success */
+    return 0;
+  }
+  pthread_mutex_unlock(&lock->mutex);
+  return EBUSY;
+}
+
+/*
+int atbuiltin_rwlock_timedwlock(atbuiltin_rwlock_t *lock, const struct timespec *timeout)
+{
+  return lock->timedwlock(lock, timeout);
+}
+
+int atbuiltin_rwlock_wlock(atbuiltin_rwlock_t *lock)
+{
+  return lock->wlock(lock);
+}
+
+int atbuiltin_rwlock_wunlock(atbuiltin_rwlock_t *lock)
+{
+  return lock->wunlock(lock);
+}
+*/
+
+static int atbuiltin_rwlock_timedrlock_read_priority(atbuiltin_rwlock_t *lock, const struct timespec *timeout)
 {
   int res;
 #ifdef ATBUILTIN_RWLOCK_USE_LONG_LONG_FOR_LOCK_BODY
@@ -248,37 +339,500 @@ int atbuiltin_rwlock_timedrlock(atbuiltin_rwlock_t *lock, const struct timespec 
   struct timespec tss, tsc, tsr;
   tsr = *timeout;
   clock_gettime(CLOCK_MONOTONIC, &tss);
-  if (lock->write_priority)
+  __sync_add_and_fetch(&lock->tr_waiter_count, 1);
+  if (lock->write_waiting)
   {
-    while (lock->write_waiting)
+    clock_gettime(CLOCK_MONOTONIC, &tsc);
+    if (timespec_sub(&tsr, &tss, &tsc))
     {
-      if ((res = pthread_mutex_timedlock(&lock->mutex, &tsr)))
+      __sync_sub_and_fetch(&lock->tr_waiter_count, 1);
+      return ETIMEDOUT;
+    }
+    if ((res = pthread_mutex_timedlock(&lock->mutex, &tsr)))
+    {
+      __sync_sub_and_fetch(&lock->tr_waiter_count, 1);
+      return res;
+    }
+    if (lock->write_waiting)
+    {
+      clock_gettime(CLOCK_MONOTONIC, &tsc);
+      if (timespec_sub(&tsr, &tss, &tsc))
       {
-        return res;
+        pthread_mutex_unlock(&lock->mutex);
+        __sync_sub_and_fetch(&lock->tr_waiter_count, 1);
+        return ETIMEDOUT;
       }
-      if (lock->write_waiting)
+      if ((res = pthread_cond_timedwait(&lock->cond, &lock->mutex, &tsr)))
       {
-        clock_gettime(CLOCK_MONOTONIC, &tsc);
-        if (timespec_sub(&tsr, &tss, &tsc))
+        if (res == ETIMEDOUT)
+        {
+          pthread_mutex_unlock(&lock->mutex);
+          __sync_sub_and_fetch(&lock->tr_waiter_count, 1);
+          return ETIMEDOUT;
+        }
+      }
+    }
+    pthread_mutex_unlock(&lock->mutex);
+  }
+  while (true)
+  {
+    cnt = __sync_add_and_fetch(&lock->lock_body, 1);
+    if (cnt > 0)
+    {
+      __sync_sub_and_fetch(&lock->tr_waiter_count, 1);
+      /* lock success */
+      return 0;
+    }
+    __sync_sub_and_fetch(&lock->lock_body, 1);
+    clock_gettime(CLOCK_MONOTONIC, &tsc);
+    if (timespec_sub(&tsr, &tss, &tsc))
+    {
+      __sync_sub_and_fetch(&lock->tr_waiter_count, 1);
+      return ETIMEDOUT;
+    }
+    if ((res = pthread_mutex_timedlock(&lock->mutex, &tsr)))
+    {
+      __sync_sub_and_fetch(&lock->tr_waiter_count, 1);
+      return res;
+    }
+    if (lock->write_waiting)
+    {
+      clock_gettime(CLOCK_MONOTONIC, &tsc);
+      if (timespec_sub(&tsr, &tss, &tsc))
+      {
+        pthread_mutex_unlock(&lock->mutex);
+        __sync_sub_and_fetch(&lock->tr_waiter_count, 1);
+        return ETIMEDOUT;
+      }
+      if ((res = pthread_cond_timedwait(&lock->cond, &lock->mutex, &tsr)))
+      {
+        if (res == ETIMEDOUT)
+        {
+          pthread_mutex_unlock(&lock->mutex);
+          __sync_sub_and_fetch(&lock->tr_waiter_count, 1);
+          return ETIMEDOUT;
+        }
+      }
+    }
+    pthread_mutex_unlock(&lock->mutex);
+  }
+}
+
+static int atbuiltin_rwlock_rlock_read_priority(atbuiltin_rwlock_t *lock)
+{
+#ifdef ATBUILTIN_RWLOCK_USE_LONG_LONG_FOR_LOCK_BODY
+  long long int cnt;
+#else
+  int cnt;
+#endif
+  if (lock->write_waiting)
+  {
+    lock->read_waiting = true;
+    pthread_mutex_lock(&lock->mutex);
+    if (lock->write_waiting)
+    {
+      pthread_cond_wait(&lock->cond, &lock->mutex);
+    }
+    pthread_mutex_unlock(&lock->mutex);
+  }
+  while (true)
+  {
+    cnt = __sync_add_and_fetch(&lock->lock_body, 1);
+    if (cnt > 0)
+    {
+      lock->read_waiting = false;
+      /* lock success */
+      return 0;
+    }
+    lock->read_waiting = true;
+    __sync_sub_and_fetch(&lock->lock_body, 1);
+    pthread_mutex_lock(&lock->mutex);
+    if (lock->write_waiting)
+    {
+      pthread_cond_wait(&lock->cond, &lock->mutex);
+    }
+    pthread_mutex_unlock(&lock->mutex);
+  }
+}
+
+static int atbuiltin_rwlock_timedwlock_read_priority(atbuiltin_rwlock_t *lock, const struct timespec *timeout)
+{
+  int res;
+  struct timespec tss, tsc, tsr;
+  tsr = *timeout;
+  clock_gettime(CLOCK_MONOTONIC, &tss);
+  if (pthread_mutex_trylock(&lock->mutex))
+  {
+    if ((res = pthread_mutex_timedlock(&lock->mutex, &tsr)))
+    {
+      return res;
+    }
+  }
+  __sync_add_and_fetch(&lock->writer_count, 1);
+  if (lock->write_waiting)
+  {
+    /* lock success */
+    return 0;
+  }
+  lock->write_waiting = true;
+  while (true)
+  {
+#ifdef ATBUILTIN_RWLOCK_USE_LONG_LONG_FOR_LOCK_BODY
+    if (__sync_bool_compare_and_swap(&lock->lock_body, 0, LLONG_MIN))
+#else
+    if (__sync_bool_compare_and_swap(&lock->lock_body, 0, INT_MIN))
+#endif
+    {
+      /* lock success */
+      return 0;
+    }
+    clock_gettime(CLOCK_MONOTONIC, &tsc);
+    if (timespec_sub(&tsr, &tss, &tsc))
+    {
+      lock->write_waiting = false;
+      if (
+        __sync_sub_and_fetch(&lock->writer_count, 1) == 0 ||
+        lock->read_waiting ||
+        lock->tr_waiter_count
+      ) {
+        pthread_cond_broadcast(&lock->cond);
+      }
+      pthread_mutex_unlock(&lock->mutex);
+      return ETIMEDOUT;
+    }
+    if (lock->write_lock_interval)
+    {
+      nanosleep(get_smaller_timespec(&tsr, &lock->write_lock_interval_ts), NULL);
+    }
+  }
+}
+
+static int atbuiltin_rwlock_wlock_read_priority(atbuiltin_rwlock_t *lock)
+{
+  __sync_add_and_fetch(&lock->writer_count, 1);
+  if (pthread_mutex_trylock(&lock->mutex))
+  {
+    pthread_mutex_lock(&lock->mutex);
+  }
+  if (lock->write_waiting)
+  {
+    /* lock success */
+    return 0;
+  }
+  lock->write_waiting = true;
+  while (true)
+  {
+#ifdef ATBUILTIN_RWLOCK_USE_LONG_LONG_FOR_LOCK_BODY
+    if (__sync_bool_compare_and_swap(&lock->lock_body, 0, LLONG_MIN))
+#else
+    if (__sync_bool_compare_and_swap(&lock->lock_body, 0, INT_MIN))
+#endif
+    {
+      /* lock success */
+      return 0;
+    }
+    if (lock->write_lock_interval)
+    {
+      nanosleep(&lock->write_lock_interval_ts, NULL);
+    }
+  }
+}
+
+static int atbuiltin_rwlock_wunlock_read_priority(atbuiltin_rwlock_t *lock)
+{
+  if (
+    __sync_sub_and_fetch(&lock->writer_count, 1) == 0 ||
+    lock->read_waiting ||
+    lock->tr_waiter_count
+  ) {
+#ifdef ATBUILTIN_RWLOCK_USE_LONG_LONG_FOR_LOCK_BODY
+    while (!__sync_bool_compare_and_swap(&lock->lock_body, LLONG_MIN, 0))
+#else
+    while (!__sync_bool_compare_and_swap(&lock->lock_body, INT_MIN, 0))
+#endif
+    {
+      ;
+    }
+    lock->write_waiting = false;
+    pthread_cond_broadcast(&lock->cond);
+  }
+  pthread_mutex_unlock(&lock->mutex);
+  /* unlock success */
+  return 0;
+}
+
+static int atbuiltin_rwlock_timedrlock_no_priority(atbuiltin_rwlock_t *lock, const struct timespec *timeout)
+{
+  int res;
+#ifdef ATBUILTIN_RWLOCK_USE_LONG_LONG_FOR_LOCK_BODY
+  long long int cnt;
+#else
+  int cnt;
+#endif
+  struct timespec tss, tsc, tsr;
+  tsr = *timeout;
+  clock_gettime(CLOCK_MONOTONIC, &tss);
+  __sync_add_and_fetch(&lock->tr_waiter_count, 1);
+  while (lock->write_waiting)
+  {
+    if ((res = pthread_mutex_timedlock(&lock->mutex, &tsr)))
+    {
+      __sync_sub_and_fetch(&lock->tr_waiter_count, 1);
+      return res;
+    }
+    if (lock->write_waiting)
+    {
+      clock_gettime(CLOCK_MONOTONIC, &tsc);
+      if (timespec_sub(&tsr, &tss, &tsc))
+      {
+        pthread_mutex_unlock(&lock->mutex);
+        __sync_sub_and_fetch(&lock->tr_waiter_count, 1);
+        return ETIMEDOUT;
+      }
+      if ((res = pthread_cond_timedwait(&lock->cond, &lock->mutex, &tsr)))
+      {
+        if (res == ETIMEDOUT)
+        {
+          pthread_mutex_unlock(&lock->mutex);
+          __sync_sub_and_fetch(&lock->tr_waiter_count, 1);
+          return ETIMEDOUT;
+        }
+      }
+    }
+    pthread_mutex_unlock(&lock->mutex);
+    clock_gettime(CLOCK_MONOTONIC, &tsc);
+    if (timespec_sub(&tsr, &tss, &tsc))
+    {
+      __sync_sub_and_fetch(&lock->tr_waiter_count, 1);
+      return ETIMEDOUT;
+    }
+  }
+  while (true)
+  {
+    cnt = __sync_add_and_fetch(&lock->lock_body, 1);
+    if (cnt > 0)
+    {
+      __sync_sub_and_fetch(&lock->tr_waiter_count, 1);
+      /* lock success */
+      return 0;
+    }
+    __sync_sub_and_fetch(&lock->lock_body, 1);
+    clock_gettime(CLOCK_MONOTONIC, &tsc);
+    if (timespec_sub(&tsr, &tss, &tsc))
+    {
+      __sync_sub_and_fetch(&lock->tr_waiter_count, 1);
+      return ETIMEDOUT;
+    }
+    if ((res = pthread_mutex_timedlock(&lock->mutex, &tsr)))
+    {
+      __sync_sub_and_fetch(&lock->tr_waiter_count, 1);
+      return res;
+    }
+    if (lock->write_waiting)
+    {
+      clock_gettime(CLOCK_MONOTONIC, &tsc);
+      if (timespec_sub(&tsr, &tss, &tsc))
+      {
+        pthread_mutex_unlock(&lock->mutex);
+        __sync_sub_and_fetch(&lock->tr_waiter_count, 1);
+        return ETIMEDOUT;
+      }
+      if ((res = pthread_cond_timedwait(&lock->cond, &lock->mutex, &tsr)))
+      {
+        if (res == ETIMEDOUT)
+        {
+          pthread_mutex_unlock(&lock->mutex);
+          __sync_sub_and_fetch(&lock->tr_waiter_count, 1);
+          return ETIMEDOUT;
+        }
+      }
+    }
+    pthread_mutex_unlock(&lock->mutex);
+  }
+}
+
+static int atbuiltin_rwlock_rlock_no_priority(atbuiltin_rwlock_t *lock)
+{
+#ifdef ATBUILTIN_RWLOCK_USE_LONG_LONG_FOR_LOCK_BODY
+  long long int cnt;
+#else
+  int cnt;
+#endif
+  while (lock->write_waiting)
+  {
+    lock->read_waiting = true;
+    pthread_mutex_lock(&lock->mutex);
+    if (lock->write_waiting)
+    {
+      pthread_cond_wait(&lock->cond, &lock->mutex);
+    }
+    pthread_mutex_unlock(&lock->mutex);
+  }
+  while (true)
+  {
+    cnt = __sync_add_and_fetch(&lock->lock_body, 1);
+    if (cnt > 0)
+    {
+      lock->read_waiting = false;
+      /* lock success */
+      return 0;
+    }
+    lock->read_waiting = true;
+    __sync_sub_and_fetch(&lock->lock_body, 1);
+    pthread_mutex_lock(&lock->mutex);
+    if (lock->write_waiting)
+    {
+      pthread_cond_wait(&lock->cond, &lock->mutex);
+    }
+    pthread_mutex_unlock(&lock->mutex);
+  }
+}
+
+static int atbuiltin_rwlock_timedwlock_no_priority(atbuiltin_rwlock_t *lock, const struct timespec *timeout)
+{
+  int res;
+  struct timespec tss, tsc, tsr;
+  tsr = *timeout;
+  clock_gettime(CLOCK_MONOTONIC, &tss);
+  if (pthread_mutex_trylock(&lock->mutex))
+  {
+    if ((res = pthread_mutex_timedlock(&lock->mutex, &tsr)))
+    {
+      return res;
+    }
+  }
+  __sync_add_and_fetch(&lock->writer_count, 1);
+  if (lock->write_waiting)
+  {
+    /* lock success */
+    return 0;
+  }
+  lock->write_waiting = true;
+  while (true)
+  {
+#ifdef ATBUILTIN_RWLOCK_USE_LONG_LONG_FOR_LOCK_BODY
+    if (__sync_bool_compare_and_swap(&lock->lock_body, 0, LLONG_MIN))
+#else
+    if (__sync_bool_compare_and_swap(&lock->lock_body, 0, INT_MIN))
+#endif
+    {
+      /* lock success */
+      return 0;
+    }
+    clock_gettime(CLOCK_MONOTONIC, &tsc);
+    if (timespec_sub(&tsr, &tss, &tsc))
+    {
+      lock->write_waiting = false;
+      if (
+        __sync_sub_and_fetch(&lock->writer_count, 1) == 0 ||
+        lock->read_waiting ||
+        lock->tr_waiter_count
+      ) {
+        pthread_cond_broadcast(&lock->cond);
+      }
+      pthread_mutex_unlock(&lock->mutex);
+      return ETIMEDOUT;
+    }
+    if (lock->write_lock_interval)
+    {
+      nanosleep(get_smaller_timespec(&tsr, &lock->write_lock_interval_ts), NULL);
+    }
+  }
+}
+
+static int atbuiltin_rwlock_wlock_no_priority(atbuiltin_rwlock_t *lock)
+{
+  __sync_add_and_fetch(&lock->writer_count, 1);
+  if (pthread_mutex_trylock(&lock->mutex))
+  {
+    pthread_mutex_lock(&lock->mutex);
+  }
+  if (lock->write_waiting)
+  {
+    /* lock success */
+    return 0;
+  }
+  lock->write_waiting = true;
+  while (true)
+  {
+#ifdef ATBUILTIN_RWLOCK_USE_LONG_LONG_FOR_LOCK_BODY
+    if (__sync_bool_compare_and_swap(&lock->lock_body, 0, LLONG_MIN))
+#else
+    if (__sync_bool_compare_and_swap(&lock->lock_body, 0, INT_MIN))
+#endif
+    {
+      /* lock success */
+      return 0;
+    }
+    if (lock->write_lock_interval)
+    {
+      nanosleep(&lock->write_lock_interval_ts, NULL);
+    }
+  }
+}
+
+static int atbuiltin_rwlock_wunlock_no_priority(atbuiltin_rwlock_t *lock)
+{
+  if (
+    __sync_sub_and_fetch(&lock->writer_count, 1) == 0 ||
+    lock->read_waiting ||
+    lock->tr_waiter_count
+  ) {
+#ifdef ATBUILTIN_RWLOCK_USE_LONG_LONG_FOR_LOCK_BODY
+    while (!__sync_bool_compare_and_swap(&lock->lock_body, LLONG_MIN, 0))
+#else
+    while (!__sync_bool_compare_and_swap(&lock->lock_body, INT_MIN, 0))
+#endif
+    {
+      ;
+    }
+    lock->write_waiting = false;
+    pthread_cond_broadcast(&lock->cond);
+  }
+  pthread_mutex_unlock(&lock->mutex);
+  /* unlock success */
+  return 0;
+}
+
+static int atbuiltin_rwlock_timedrlock_write_priority(atbuiltin_rwlock_t *lock, const struct timespec *timeout)
+{
+  int res;
+#ifdef ATBUILTIN_RWLOCK_USE_LONG_LONG_FOR_LOCK_BODY
+  long long int cnt;
+#else
+  int cnt;
+#endif
+  struct timespec tss, tsc, tsr;
+  tsr = *timeout;
+  clock_gettime(CLOCK_MONOTONIC, &tss);
+  while (lock->write_waiting)
+  {
+    if ((res = pthread_mutex_timedlock(&lock->mutex, &tsr)))
+    {
+      return res;
+    }
+    if (lock->write_waiting)
+    {
+      clock_gettime(CLOCK_MONOTONIC, &tsc);
+      if (timespec_sub(&tsr, &tss, &tsc))
+      {
+        pthread_mutex_unlock(&lock->mutex);
+        return ETIMEDOUT;
+      }
+      if ((res = pthread_cond_timedwait(&lock->cond, &lock->mutex, &tsr)))
+      {
+        if (res == ETIMEDOUT)
         {
           pthread_mutex_unlock(&lock->mutex);
           return ETIMEDOUT;
         }
-        if ((res = pthread_cond_timedwait(&lock->cond, &lock->mutex, &tsr)))
-        {
-          if (res == ETIMEDOUT)
-          {
-            pthread_mutex_unlock(&lock->mutex);
-            return ETIMEDOUT;
-          }
-        }
       }
-      pthread_mutex_unlock(&lock->mutex);
-      clock_gettime(CLOCK_MONOTONIC, &tsc);
-      if (timespec_sub(&tsr, &tss, &tsc))
-      {
-        return ETIMEDOUT;
-      }
+    }
+    pthread_mutex_unlock(&lock->mutex);
+    clock_gettime(CLOCK_MONOTONIC, &tsc);
+    if (timespec_sub(&tsr, &tss, &tsc))
+    {
+      return ETIMEDOUT;
     }
   }
   while (true)
@@ -320,24 +874,21 @@ int atbuiltin_rwlock_timedrlock(atbuiltin_rwlock_t *lock, const struct timespec 
   }
 }
 
-int atbuiltin_rwlock_rlock(atbuiltin_rwlock_t *lock)
+static int atbuiltin_rwlock_rlock_write_priority(atbuiltin_rwlock_t *lock)
 {
 #ifdef ATBUILTIN_RWLOCK_USE_LONG_LONG_FOR_LOCK_BODY
   long long int cnt;
 #else
   int cnt;
 #endif
-  if (lock->write_priority)
+  if (lock->write_waiting)
   {
-    while (lock->write_waiting)
+    pthread_mutex_lock(&lock->mutex);
+    if (lock->write_waiting)
     {
-      pthread_mutex_lock(&lock->mutex);
-      if (lock->write_waiting)
-      {
-        pthread_cond_wait(&lock->cond, &lock->mutex);
-      }
-      pthread_mutex_unlock(&lock->mutex);
+      pthread_cond_wait(&lock->cond, &lock->mutex);
     }
+    pthread_mutex_unlock(&lock->mutex);
   }
   while (true)
   {
@@ -357,36 +908,7 @@ int atbuiltin_rwlock_rlock(atbuiltin_rwlock_t *lock)
   }
 }
 
-int atbuiltin_rwlock_runlock(atbuiltin_rwlock_t *lock)
-{
-  __sync_sub_and_fetch(&lock->lock_body, 1);
-  return 0;
-}
-
-int atbuiltin_rwlock_trywlock(atbuiltin_rwlock_t *lock)
-{
-  int ret;
-  if ((ret = pthread_mutex_trylock(&lock->mutex)))
-    return ret;
-#ifdef ATBUILTIN_RWLOCK_USE_LONG_LONG_FOR_LOCK_BODY
-  if (__sync_bool_compare_and_swap(&lock->lock_body, 0, LLONG_MIN))
-#else
-  if (__sync_bool_compare_and_swap(&lock->lock_body, 0, INT_MIN))
-#endif
-  {
-    if (lock->write_counting)
-    {
-      __sync_add_and_fetch(&lock->writer_count, 1);
-    }
-    lock->write_waiting = true;
-    /* lock success */
-    return 0;
-  }
-  pthread_mutex_unlock(&lock->mutex);
-  return EBUSY;
-}
-
-int atbuiltin_rwlock_timedwlock(atbuiltin_rwlock_t *lock, const struct timespec *timeout)
+static int atbuiltin_rwlock_timedwlock_write_priority(atbuiltin_rwlock_t *lock, const struct timespec *timeout)
 {
   int res;
   struct timespec tss, tsc, tsr;
@@ -399,14 +921,11 @@ int atbuiltin_rwlock_timedwlock(atbuiltin_rwlock_t *lock, const struct timespec 
       return res;
     }
   }
-  if (lock->write_counting)
+  __sync_add_and_fetch(&lock->writer_count, 1);
+  if (lock->write_waiting)
   {
-    __sync_add_and_fetch(&lock->writer_count, 1);
-    if (lock->write_waiting)
-    {
-      /* lock success */
-      return 0;
-    }
+    /* lock success */
+    return 0;
   }
   lock->write_waiting = true;
   while (true)
@@ -423,11 +942,9 @@ int atbuiltin_rwlock_timedwlock(atbuiltin_rwlock_t *lock, const struct timespec 
     clock_gettime(CLOCK_MONOTONIC, &tsc);
     if (timespec_sub(&tsr, &tss, &tsc))
     {
-      if (
-        !lock->write_counting ||
-        __sync_sub_and_fetch(&lock->writer_count, 1) == 0
-      ) {
-        lock->write_waiting = false;
+      lock->write_waiting = false;
+      if (__sync_sub_and_fetch(&lock->writer_count, 1) == 0)
+      {
         pthread_cond_broadcast(&lock->cond);
       }
       pthread_mutex_unlock(&lock->mutex);
@@ -440,20 +957,15 @@ int atbuiltin_rwlock_timedwlock(atbuiltin_rwlock_t *lock, const struct timespec 
   }
 }
 
-int atbuiltin_rwlock_wlock(atbuiltin_rwlock_t *lock)
+static int atbuiltin_rwlock_wlock_write_priority(atbuiltin_rwlock_t *lock)
 {
-  if (lock->write_counting)
-  {
-    __sync_add_and_fetch(&lock->writer_count, 1);
-  }
+  __sync_add_and_fetch(&lock->writer_count, 1);
   if (pthread_mutex_trylock(&lock->mutex))
   {
     pthread_mutex_lock(&lock->mutex);
   }
-  if (
-    lock->write_counting &&
-    lock->write_waiting
-  ) {
+  if (lock->write_waiting)
+  {
     /* lock success */
     return 0;
   }
@@ -476,41 +988,22 @@ int atbuiltin_rwlock_wlock(atbuiltin_rwlock_t *lock)
   }
 }
 
-int atbuiltin_rwlock_wunlock(atbuiltin_rwlock_t *lock)
+static int atbuiltin_rwlock_wunlock_write_priority(atbuiltin_rwlock_t *lock)
 {
-  if (lock->write_counting)
+  if (__sync_sub_and_fetch(&lock->writer_count, 1) == 0)
   {
-    if (__sync_sub_and_fetch(&lock->writer_count, 1) == 0)
-    {
 #ifdef ATBUILTIN_RWLOCK_USE_LONG_LONG_FOR_LOCK_BODY
-      while (!__sync_bool_compare_and_swap(&lock->lock_body, LLONG_MIN, 0))
+    while (!__sync_bool_compare_and_swap(&lock->lock_body, LLONG_MIN, 0))
 #else
-      while (!__sync_bool_compare_and_swap(&lock->lock_body, INT_MIN, 0))
+    while (!__sync_bool_compare_and_swap(&lock->lock_body, INT_MIN, 0))
 #endif
-      {
-        ;
-      }
-      lock->write_waiting = false;
-      pthread_cond_broadcast(&lock->cond);
-    }
-    pthread_mutex_unlock(&lock->mutex);
-    /* unlock success */
-    return 0;
-  } else {
-    while (true)
     {
-#ifdef ATBUILTIN_RWLOCK_USE_LONG_LONG_FOR_LOCK_BODY
-      if (__sync_bool_compare_and_swap(&lock->lock_body, LLONG_MIN, 0))
-#else
-      if (__sync_bool_compare_and_swap(&lock->lock_body, INT_MIN, 0))
-#endif
-      {
-        lock->write_waiting = false;
-        pthread_cond_broadcast(&lock->cond);
-        pthread_mutex_unlock(&lock->mutex);
-        /* unlock success */
-        return 0;
-      }
+      ;
     }
+    lock->write_waiting = false;
+    pthread_cond_broadcast(&lock->cond);
   }
+  pthread_mutex_unlock(&lock->mutex);
+  /* unlock success */
+  return 0;
 }

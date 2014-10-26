@@ -33,11 +33,16 @@
 
 #define NUMBER_OF_THREADS 100
 #define NUMBER_OF_LOOPS 1000000
-/*
+
+#ifdef ATBUILTIN_RWLOCK_READ_PRIORITY_TEST
 #define OPTION_OF_RWLOCKATTR ATBUILTIN_RWLOCK_READ_PRIORITY
+#else
+#ifdef ATBUILTIN_RWLOCK_NO_PRIORITY_TEST
 #define OPTION_OF_RWLOCKATTR ATBUILTIN_RWLOCK_NO_PRIORITY
-*/
+#else
 #define OPTION_OF_RWLOCKATTR ATBUILTIN_RWLOCK_WRITE_PRIORITY
+#endif
+#endif
 
 atbuiltin_rwlock_t rwlock;
 volatile bool rlocking;
@@ -45,13 +50,13 @@ volatile bool wlocking;
 
 void *worker_thread(void *arg)
 {
-  int i, ret;
+  int i, res;
   int worker_id = *((int *) arg);
   if ((worker_id % NUMBER_OF_THREADS) < NUMBER_OF_THREADS / 10)
   {
     for (i = 0; i < NUMBER_OF_LOOPS; i++)
     {
-      if (!(ret = atbuiltin_rwlock_wlock(&rwlock)))
+      if (!(res = atbuiltin_rwlock_wlock(&rwlock)))
       {
         wlocking = true;
         if (rlocking)
@@ -59,13 +64,13 @@ void *worker_thread(void *arg)
         wlocking = false;
         atbuiltin_rwlock_wunlock(&rwlock);
       } else {
-        printf("write lock thread [%d] got %d\n", worker_id, ret);
+        printf("write lock thread [%d] got %d\n", worker_id, res);
       }
     }
   } else {
     for (i = 0; i < NUMBER_OF_LOOPS; i++)
     {
-      if (!(ret = atbuiltin_rwlock_rlock(&rwlock)))
+      if (!(res = atbuiltin_rwlock_rlock(&rwlock)))
       {
         rlocking = true;
         if (wlocking)
@@ -73,7 +78,7 @@ void *worker_thread(void *arg)
         rlocking = false;
         atbuiltin_rwlock_runlock(&rwlock);
       } else {
-        printf("read lock thread [%d] got %d\n", worker_id, ret);
+        printf("read lock thread [%d] got %d\n", worker_id, res);
       }
     }
   }
@@ -94,7 +99,7 @@ int main(int argc, char **argv)
   wlocking = false;
   pthread_attr_init(&pthread_attr);
   atbuiltin_rwlockattr_init(&attr);
-  atbuiltin_rwlockattr_settype_np(&attr, OPTION_OF_RWLOCKATTR);
+  atbuiltin_rwlockattr_settype_priority(&attr, OPTION_OF_RWLOCKATTR);
   atbuiltin_rwlock_init(&rwlock, &attr);
 
   timer = time(NULL);

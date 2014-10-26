@@ -34,11 +34,16 @@
 
 #define NUMBER_OF_THREADS 100
 #define NUMBER_OF_LOOPS 1000000
-/*
+
+#ifdef ATBUILTIN_RWLOCK_READ_PRIORITY_TEST
 #define OPTION_OF_RWLOCKATTR ATBUILTIN_RWLOCK_READ_PRIORITY
+#else
+#ifdef ATBUILTIN_RWLOCK_NO_PRIORITY_TEST
 #define OPTION_OF_RWLOCKATTR ATBUILTIN_RWLOCK_NO_PRIORITY
-*/
+#else
 #define OPTION_OF_RWLOCKATTR ATBUILTIN_RWLOCK_WRITE_PRIORITY
+#endif
+#endif
 
 atbuiltin_rwlock_t rwlock;
 volatile bool rlocking;
@@ -108,7 +113,7 @@ int main(int argc, char **argv)
   wlocking = false;
   pthread_attr_init(&pthread_attr);
   atbuiltin_rwlockattr_init(&attr);
-  atbuiltin_rwlockattr_settype_np(&attr, OPTION_OF_RWLOCKATTR);
+  atbuiltin_rwlockattr_settype_priority(&attr, OPTION_OF_RWLOCKATTR);
   atbuiltin_rwlock_init(&rwlock, &attr);
 
   timer = time(NULL);

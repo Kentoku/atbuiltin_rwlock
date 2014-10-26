@@ -33,11 +33,16 @@
 
 #define NUMBER_OF_THREADS 100
 #define NUMBER_OF_LOOPS 1000000
-/*
+
+#ifdef ATBUILTIN_RWLOCK_READ_PRIORITY_TEST
 #define OPTION_OF_RWLOCKATTR ATBUILTIN_RWLOCK_READ_PRIORITY
+#else
+#ifdef ATBUILTIN_RWLOCK_NO_PRIORITY_TEST
 #define OPTION_OF_RWLOCKATTR ATBUILTIN_RWLOCK_NO_PRIORITY
-*/
+#else
 #define OPTION_OF_RWLOCKATTR ATBUILTIN_RWLOCK_WRITE_PRIORITY
+#endif
+#endif
 
 atbuiltin_rwlock_t rwlock;
 
@@ -45,9 +50,15 @@ void *worker_thread(void *arg)
 {
   int i, ret;
   int worker_id = *((int *) arg);
-/*  if ((worker_id % NUMBER_OF_THREADS) < NUMBER_OF_THREADS) *//* 100% write */
-/*  if ((worker_id % NUMBER_OF_THREADS) < 0) *//* 100% read */
+#ifdef ATBUILTIN_RWLOCK_W100_TEST
+  if ((worker_id % NUMBER_OF_THREADS) < NUMBER_OF_THREADS) /* 100% write */
+#else
+#ifdef ATBUILTIN_RWLOCK_R100_TEST
+  if ((worker_id % NUMBER_OF_THREADS) < 0) /* 100% read */
+#else
   if ((worker_id % NUMBER_OF_THREADS) < NUMBER_OF_THREADS / 10) /* 10% write 90% read */
+#endif
+#endif
   {
     for (i = 0; i < NUMBER_OF_LOOPS; i++)
     {
@@ -83,7 +94,7 @@ int main(int argc, char **argv)
 
   pthread_attr_init(&pthread_attr);
   atbuiltin_rwlockattr_init(&attr);
-  atbuiltin_rwlockattr_settype_np(&attr, OPTION_OF_RWLOCKATTR);
+  atbuiltin_rwlockattr_settype_priority(&attr, OPTION_OF_RWLOCKATTR);
   atbuiltin_rwlock_init(&rwlock, &attr);
 
   timer = time(NULL);
