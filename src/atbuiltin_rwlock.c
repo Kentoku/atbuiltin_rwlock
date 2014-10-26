@@ -142,9 +142,9 @@ int atbuiltin_rwlockattr_gettype_mutex(atbuiltin_rwlock_attr_t *attr, int *kind)
   return pthread_mutexattr_gettype(&attr->mutex_attr, kind);
 }
 
-int atbuiltin_rwlockattr_settype_priority(atbuiltin_rwlock_attr_t *attr, int kind)
+int atbuiltin_rwlockattr_settype_priority(atbuiltin_rwlock_attr_t *attr, int priority)
 {
-  switch (kind)
+  switch (priority)
   {
     case ATBUILTIN_RWLOCK_READ_PRIORITY:
     case ATBUILTIN_RWLOCK_NO_PRIORITY:
@@ -153,13 +153,13 @@ int atbuiltin_rwlockattr_settype_priority(atbuiltin_rwlock_attr_t *attr, int kin
     default:
       return EINVAL;
   }
-  attr->rwlock_attr = kind;
+  attr->rwlock_attr = priority;
   return 0;
 }
 
-int atbuiltin_rwlockattr_gettype_priority(atbuiltin_rwlock_attr_t *attr, int *kind)
+int atbuiltin_rwlockattr_gettype_priority(atbuiltin_rwlock_attr_t *attr, int *priority)
 {
-  *kind = attr->rwlock_attr;
+  *priority = attr->rwlock_attr;
   return 0;
 }
 
@@ -881,7 +881,7 @@ static int atbuiltin_rwlock_rlock_write_priority(atbuiltin_rwlock_t *lock)
 #else
   int cnt;
 #endif
-  if (lock->write_waiting)
+  while (lock->write_waiting)
   {
     pthread_mutex_lock(&lock->mutex);
     if (lock->write_waiting)
