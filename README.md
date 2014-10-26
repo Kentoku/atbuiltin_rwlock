@@ -6,12 +6,10 @@ RW lock functions using atomic builtins
 ### Structs ###
 
 * atbuiltin_rwlock_attr_t
-
-The rwlock attribute object for initializing atbuiltin_rwlock_t.
+  The rwlock attribute object for initializing atbuiltin_rwlock_t.
 
 * atbuiltin_rwlock_t
-
-The rwlock object for initializing atbuiltin_rwlock_t.
+  The rwlock object for initializing atbuiltin_rwlock_t.
 
 ### Functions ###
 
