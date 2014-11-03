@@ -30,11 +30,65 @@
 #ifndef _ATBUILTIN_RWLOCK_H
 #define _ATBUILTIN_RWLOCK_H
 #include <pthread.h>
+#include <limits.h>
 #include <time.h>
 
 #define ATBUILTIN_RWLOCK_READ_PRIORITY  0
 #define ATBUILTIN_RWLOCK_NO_PRIORITY    1
 #define ATBUILTIN_RWLOCK_WRITE_PRIORITY 2
+
+#if __GNUC__ > 4 || \
+  (__GNUC__ == 4 && (__GNUC_MINOR__ > 7 || \
+                   (__GNUC_MINOR__ == 7 && __GNUC_PATCHLEVEL__ > 0)))
+#else
+  #ifndef ATBUILTIN_RWLOCK_USE_SYNC_BUILTIN
+    #define ATBUILTIN_RWLOCK_USE_SYNC_BUILTIN
+  #endif
+#endif
+
+#ifdef ATBUILTIN_RWLOCK_USE_LONG_LONG_FOR_LOCK_BODY
+  #define atbuiltin_rwlock_signed long long int
+  #define atbuiltin_rwlock_unsigned unsigned long long int
+  #define ATBUILTIN_RWLOCK_MIN_VAL LLONG_MIN
+#else
+  #define atbuiltin_rwlock_signed int
+  #define atbuiltin_rwlock_unsigned unsigned int
+  #define ATBUILTIN_RWLOCK_MIN_VAL INT_MIN
+#endif
+
+#ifdef ATBUILTIN_RWLOCK_USE_SYNC_BUILTIN
+  #define ATBUILTIN_RWLOCK_RELAXED
+  #define ATBUILTIN_RWLOCK_CONSUME
+  #define ATBUILTIN_RWLOCK_ACQUIRE
+  #define ATBUILTIN_RWLOCK_RELEASE
+  #define ATBUILTIN_RWLOCK_ACQ_REL
+  #define ATBUILTIN_RWLOCK_SEQ_CST
+  #define atbuiltin_compare_and_swap_n(A, B, C, D, E, F) \
+    __sync_bool_compare_and_swap(A, *(B), C)
+  #define atbuiltin_add_and_fetch(A, B, C) \
+    __sync_add_and_fetch(A, B)
+  #define atbuiltin_sub_and_fetch(A, B, C) \
+    __sync_sub_and_fetch(A, B)
+#else
+  #define ATBUILTIN_RWLOCK_RELAXED __ATOMIC_RELAXED
+  #define ATBUILTIN_RWLOCK_CONSUME __ATOMIC_CONSUME
+  #define ATBUILTIN_RWLOCK_ACQUIRE __ATOMIC_ACQUIRE
+  #define ATBUILTIN_RWLOCK_RELEASE __ATOMIC_RELEASE
+  #define ATBUILTIN_RWLOCK_ACQ_REL __ATOMIC_ACQ_REL
+  #define ATBUILTIN_RWLOCK_SEQ_CST __ATOMIC_SEQ_CST
+  #define atbuiltin_compare_and_swap_n(A, B, C, D, E, F) \
+    __atomic_compare_exchange_n(A, B, C, D, E, F)
+  #define atbuiltin_add_and_fetch(A, B, C) \
+    __atomic_add_fetch(A, B, C)
+  #define atbuiltin_sub_and_fetch(A, B, C) \
+    __atomic_sub_fetch(A, B, C)
+#endif
+
+#ifdef ATBUILTIN_RWLOCK_USE_STRONG_FOR_CAS
+  #define ATBUILTIN_RWLOCK_CAS_WEAK false
+#else
+  #define ATBUILTIN_RWLOCK_CAS_WEAK true
+#endif
 
 struct atbuiltin_rwlock_attr_t
 {
@@ -46,19 +100,13 @@ struct atbuiltin_rwlock_attr_t
 
 struct atbuiltin_rwlock_t
 {
-#ifdef ATBUILTIN_RWLOCK_USE_LONG_LONG_FOR_LOCK_BODY
-  long long int lock_body;
-  unsigned long long int writer_count;
-  unsigned long long int tr_waiter_count;
-#else
-  int lock_body;
-  unsigned int writer_count;
-  unsigned int tr_waiter_count;
-#endif
+  atbuiltin_rwlock_signed lock_body;
+  atbuiltin_rwlock_unsigned writer_count;
+  volatile atbuiltin_rwlock_unsigned tr_waiter_count;
   unsigned long long int write_lock_interval;
   struct timespec write_lock_interval_ts;
-  bool read_waiting;
-  bool write_waiting;
+  volatile bool read_waiting;
+  volatile bool write_waiting;
   pthread_mutex_t mutex;
   pthread_cond_t cond;
   int (*timedrlock)(atbuiltin_rwlock_t *lock, const struct timespec *timeout);

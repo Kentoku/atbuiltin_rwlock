@@ -28,7 +28,6 @@
   ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. */
 
 #include <errno.h>
-#include <limits.h>
 #include <atbuiltin_rwlock.h>
 
 static int atbuiltin_rwlock_timedrlock_read_priority(atbuiltin_rwlock_t *lock, const struct timespec *timeout);
@@ -94,6 +93,67 @@ static bool timespec_sub(struct timespec *tsr, const struct timespec *tss, const
   }
   return false;
 }
+
+#ifdef ATBUILTIN_RWLOCK_WITHOUT_SPIN_LOCK
+static inline int atbuiltin_spin_timedlock(atbuiltin_rwlock_t *lock, const struct timespec *timeout)
+{
+  int res;
+  if ((res = pthread_mutex_timedlock(&lock->mutex, timeout)))
+  {
+    return res;
+  }
+  return 0;
+}
+
+static inline void atbuiltin_spin_lock(atbuiltin_rwlock_t *lock)
+{
+  pthread_mutex_lock(&lock->mutex);
+}
+#else
+#define ATBUILTIN_RWLOCK_SPIN_LOOPS 7
+static inline int atbuiltin_spin_timedlock(atbuiltin_rwlock_t *lock, const struct timespec *timeout)
+{
+  int res;
+  unsigned int i;
+  if (pthread_mutex_trylock(&lock->mutex))
+  {
+    for (i = 0; i < ATBUILTIN_RWLOCK_SPIN_LOOPS; i++)
+    {
+      if (!pthread_mutex_trylock(&lock->mutex))
+      {
+        break;
+      }
+    }
+    if (i == ATBUILTIN_RWLOCK_SPIN_LOOPS)
+    {
+      if ((res = pthread_mutex_timedlock(&lock->mutex, timeout)))
+      {
+        return res;
+      }
+    }
+  }
+  return 0;
+}
+
+static inline void atbuiltin_spin_lock(atbuiltin_rwlock_t *lock)
+{
+  unsigned int i;
+  if (pthread_mutex_trylock(&lock->mutex))
+  {
+    for (i = 0; i < ATBUILTIN_RWLOCK_SPIN_LOOPS; i++)
+    {
+      if (!pthread_mutex_trylock(&lock->mutex))
+      {
+        break;
+      }
+    }
+    if (i == ATBUILTIN_RWLOCK_SPIN_LOOPS)
+    {
+      pthread_mutex_lock(&lock->mutex);
+    }
+  }
+}
+#endif
 
 int atbuiltin_rwlockattr_init(atbuiltin_rwlock_attr_t *attr)
 {
@@ -248,22 +308,18 @@ int atbuiltin_rwlock_destroy(atbuiltin_rwlock_t *lock)
 int atbuiltin_rwlock_tryrlock(atbuiltin_rwlock_t *lock)
 {
   int res;
-#ifdef ATBUILTIN_RWLOCK_USE_LONG_LONG_FOR_LOCK_BODY
-  long long int cnt;
-#else
-  int cnt;
-#endif
+  atbuiltin_rwlock_signed cnt;
   if (lock->write_waiting)
   {
     return EBUSY;
   }
-  cnt = __sync_add_and_fetch(&lock->lock_body, 1);
+  cnt = atbuiltin_add_and_fetch(&lock->lock_body, 1, ATBUILTIN_RWLOCK_RELAXED);
   if (cnt > 0)
   {
     /* lock success */
     return 0;
   }
-  __sync_sub_and_fetch(&lock->lock_body, 1);
+  atbuiltin_sub_and_fetch(&lock->lock_body, 1, ATBUILTIN_RWLOCK_RELAXED);
   return EBUSY;
 }
 
@@ -281,7 +337,7 @@ int atbuiltin_rwlock_rlock(atbuiltin_rwlock_t *lock)
 
 int atbuiltin_rwlock_runlock(atbuiltin_rwlock_t *lock)
 {
-  __sync_sub_and_fetch(&lock->lock_body, 1);
+  atbuiltin_sub_and_fetch(&lock->lock_body, 1, ATBUILTIN_RWLOCK_RELAXED);
   return 0;
 }
 
@@ -292,17 +348,16 @@ int atbuiltin_rwlock_trywlock(atbuiltin_rwlock_t *lock)
     return ret;
   if (lock->write_waiting)
   {
-    __sync_add_and_fetch(&lock->writer_count, 1);
+    atbuiltin_add_and_fetch(&lock->writer_count, 1, ATBUILTIN_RWLOCK_RELAXED);
     /* lock success */
     return 0;
   }
-#ifdef ATBUILTIN_RWLOCK_USE_LONG_LONG_FOR_LOCK_BODY
-  if (__sync_bool_compare_and_swap(&lock->lock_body, 0, LLONG_MIN))
-#else
-  if (__sync_bool_compare_and_swap(&lock->lock_body, 0, INT_MIN))
-#endif
+  register atbuiltin_rwlock_signed zero_val = 0;
+  if (atbuiltin_compare_and_swap_n(&lock->lock_body, &zero_val,
+    ATBUILTIN_RWLOCK_MIN_VAL, ATBUILTIN_RWLOCK_CAS_WEAK,
+    ATBUILTIN_RWLOCK_RELAXED, ATBUILTIN_RWLOCK_RELAXED))
   {
-    __sync_add_and_fetch(&lock->writer_count, 1);
+    atbuiltin_add_and_fetch(&lock->writer_count, 1, ATBUILTIN_RWLOCK_RELAXED);
     lock->write_waiting = true;
     /* lock success */
     return 0;
@@ -331,26 +386,22 @@ int atbuiltin_rwlock_wunlock(atbuiltin_rwlock_t *lock)
 static int atbuiltin_rwlock_timedrlock_read_priority(atbuiltin_rwlock_t *lock, const struct timespec *timeout)
 {
   int res;
-#ifdef ATBUILTIN_RWLOCK_USE_LONG_LONG_FOR_LOCK_BODY
-  long long int cnt;
-#else
-  int cnt;
-#endif
+  atbuiltin_rwlock_signed cnt;
   struct timespec tss, tsc, tsr;
   tsr = *timeout;
   clock_gettime(CLOCK_MONOTONIC, &tss);
-  __sync_add_and_fetch(&lock->tr_waiter_count, 1);
+  atbuiltin_add_and_fetch(&lock->tr_waiter_count, 1, ATBUILTIN_RWLOCK_RELAXED);
   if (lock->write_waiting)
   {
     clock_gettime(CLOCK_MONOTONIC, &tsc);
     if (timespec_sub(&tsr, &tss, &tsc))
     {
-      __sync_sub_and_fetch(&lock->tr_waiter_count, 1);
+      atbuiltin_sub_and_fetch(&lock->tr_waiter_count, 1, ATBUILTIN_RWLOCK_RELAXED);
       return ETIMEDOUT;
     }
     if ((res = pthread_mutex_timedlock(&lock->mutex, &tsr)))
     {
-      __sync_sub_and_fetch(&lock->tr_waiter_count, 1);
+      atbuiltin_sub_and_fetch(&lock->tr_waiter_count, 1, ATBUILTIN_RWLOCK_RELAXED);
       return res;
     }
     if (lock->write_waiting)
@@ -359,7 +410,7 @@ static int atbuiltin_rwlock_timedrlock_read_priority(atbuiltin_rwlock_t *lock, c
       if (timespec_sub(&tsr, &tss, &tsc))
       {
         pthread_mutex_unlock(&lock->mutex);
-        __sync_sub_and_fetch(&lock->tr_waiter_count, 1);
+        atbuiltin_sub_and_fetch(&lock->tr_waiter_count, 1, ATBUILTIN_RWLOCK_RELAXED);
         return ETIMEDOUT;
       }
       if ((res = pthread_cond_timedwait(&lock->cond, &lock->mutex, &tsr)))
@@ -367,7 +418,7 @@ static int atbuiltin_rwlock_timedrlock_read_priority(atbuiltin_rwlock_t *lock, c
         if (res == ETIMEDOUT)
         {
           pthread_mutex_unlock(&lock->mutex);
-          __sync_sub_and_fetch(&lock->tr_waiter_count, 1);
+          atbuiltin_sub_and_fetch(&lock->tr_waiter_count, 1, ATBUILTIN_RWLOCK_RELAXED);
           return ETIMEDOUT;
         }
       }
@@ -376,23 +427,25 @@ static int atbuiltin_rwlock_timedrlock_read_priority(atbuiltin_rwlock_t *lock, c
   }
   while (true)
   {
-    cnt = __sync_add_and_fetch(&lock->lock_body, 1);
+    cnt = atbuiltin_add_and_fetch(&lock->lock_body, 1, ATBUILTIN_RWLOCK_RELAXED);
     if (cnt > 0)
     {
-      __sync_sub_and_fetch(&lock->tr_waiter_count, 1);
+      atbuiltin_sub_and_fetch(&lock->tr_waiter_count, 1, ATBUILTIN_RWLOCK_RELAXED);
       /* lock success */
       return 0;
     }
-    __sync_sub_and_fetch(&lock->lock_body, 1);
+    atbuiltin_sub_and_fetch(&lock->lock_body, 1, ATBUILTIN_RWLOCK_RELAXED);
     clock_gettime(CLOCK_MONOTONIC, &tsc);
     if (timespec_sub(&tsr, &tss, &tsc))
     {
-      __sync_sub_and_fetch(&lock->tr_waiter_count, 1);
+      atbuiltin_sub_and_fetch(&lock->tr_waiter_count, 1,
+        ATBUILTIN_RWLOCK_RELAXED);
       return ETIMEDOUT;
     }
     if ((res = pthread_mutex_timedlock(&lock->mutex, &tsr)))
     {
-      __sync_sub_and_fetch(&lock->tr_waiter_count, 1);
+      atbuiltin_sub_and_fetch(&lock->tr_waiter_count, 1,
+        ATBUILTIN_RWLOCK_RELAXED);
       return res;
     }
     if (lock->write_waiting)
@@ -401,7 +454,8 @@ static int atbuiltin_rwlock_timedrlock_read_priority(atbuiltin_rwlock_t *lock, c
       if (timespec_sub(&tsr, &tss, &tsc))
       {
         pthread_mutex_unlock(&lock->mutex);
-        __sync_sub_and_fetch(&lock->tr_waiter_count, 1);
+        atbuiltin_sub_and_fetch(&lock->tr_waiter_count, 1,
+          ATBUILTIN_RWLOCK_RELAXED);
         return ETIMEDOUT;
       }
       if ((res = pthread_cond_timedwait(&lock->cond, &lock->mutex, &tsr)))
@@ -409,7 +463,8 @@ static int atbuiltin_rwlock_timedrlock_read_priority(atbuiltin_rwlock_t *lock, c
         if (res == ETIMEDOUT)
         {
           pthread_mutex_unlock(&lock->mutex);
-          __sync_sub_and_fetch(&lock->tr_waiter_count, 1);
+          atbuiltin_sub_and_fetch(&lock->tr_waiter_count, 1,
+            ATBUILTIN_RWLOCK_RELAXED);
           return ETIMEDOUT;
         }
       }
@@ -420,11 +475,7 @@ static int atbuiltin_rwlock_timedrlock_read_priority(atbuiltin_rwlock_t *lock, c
 
 static int atbuiltin_rwlock_rlock_read_priority(atbuiltin_rwlock_t *lock)
 {
-#ifdef ATBUILTIN_RWLOCK_USE_LONG_LONG_FOR_LOCK_BODY
-  long long int cnt;
-#else
-  int cnt;
-#endif
+  atbuiltin_rwlock_signed cnt;
   if (lock->write_waiting)
   {
     lock->read_waiting = true;
@@ -437,7 +488,7 @@ static int atbuiltin_rwlock_rlock_read_priority(atbuiltin_rwlock_t *lock)
   }
   while (true)
   {
-    cnt = __sync_add_and_fetch(&lock->lock_body, 1);
+    cnt = atbuiltin_add_and_fetch(&lock->lock_body, 1, ATBUILTIN_RWLOCK_RELAXED);
     if (cnt > 0)
     {
       lock->read_waiting = false;
@@ -445,7 +496,7 @@ static int atbuiltin_rwlock_rlock_read_priority(atbuiltin_rwlock_t *lock)
       return 0;
     }
     lock->read_waiting = true;
-    __sync_sub_and_fetch(&lock->lock_body, 1);
+    atbuiltin_sub_and_fetch(&lock->lock_body, 1, ATBUILTIN_RWLOCK_RELAXED);
     pthread_mutex_lock(&lock->mutex);
     if (lock->write_waiting)
     {
@@ -461,27 +512,31 @@ static int atbuiltin_rwlock_timedwlock_read_priority(atbuiltin_rwlock_t *lock, c
   struct timespec tss, tsc, tsr;
   tsr = *timeout;
   clock_gettime(CLOCK_MONOTONIC, &tss);
-  if (pthread_mutex_trylock(&lock->mutex))
+  if ((res = atbuiltin_spin_timedlock(lock, &tsr)))
   {
-    if ((res = pthread_mutex_timedlock(&lock->mutex, &tsr)))
-    {
-      return res;
-    }
+    return res;
   }
-  __sync_add_and_fetch(&lock->writer_count, 1);
+  atbuiltin_add_and_fetch(&lock->writer_count, 1, ATBUILTIN_RWLOCK_RELAXED);
   if (lock->write_waiting)
   {
     /* lock success */
     return 0;
   }
   lock->write_waiting = true;
+  register atbuiltin_rwlock_signed zero_val = 0;
+  if (atbuiltin_compare_and_swap_n(&lock->lock_body, &zero_val,
+    ATBUILTIN_RWLOCK_MIN_VAL, ATBUILTIN_RWLOCK_CAS_WEAK,
+    ATBUILTIN_RWLOCK_RELAXED, ATBUILTIN_RWLOCK_RELAXED))
+  {
+    /* lock success */
+    return 0;
+  }
   while (true)
   {
-#ifdef ATBUILTIN_RWLOCK_USE_LONG_LONG_FOR_LOCK_BODY
-    if (__sync_bool_compare_and_swap(&lock->lock_body, 0, LLONG_MIN))
-#else
-    if (__sync_bool_compare_and_swap(&lock->lock_body, 0, INT_MIN))
-#endif
+    zero_val = 0;
+    if (atbuiltin_compare_and_swap_n(&lock->lock_body, &zero_val,
+      ATBUILTIN_RWLOCK_MIN_VAL, ATBUILTIN_RWLOCK_CAS_WEAK,
+      ATBUILTIN_RWLOCK_RELAXED, ATBUILTIN_RWLOCK_RELAXED))
     {
       /* lock success */
       return 0;
@@ -491,7 +546,8 @@ static int atbuiltin_rwlock_timedwlock_read_priority(atbuiltin_rwlock_t *lock, c
     {
       lock->write_waiting = false;
       if (
-        __sync_sub_and_fetch(&lock->writer_count, 1) == 0 ||
+        atbuiltin_sub_and_fetch(&lock->writer_count, 1,
+          ATBUILTIN_RWLOCK_RELAXED) == 0 ||
         lock->read_waiting ||
         lock->tr_waiter_count
       ) {
@@ -509,24 +565,28 @@ static int atbuiltin_rwlock_timedwlock_read_priority(atbuiltin_rwlock_t *lock, c
 
 static int atbuiltin_rwlock_wlock_read_priority(atbuiltin_rwlock_t *lock)
 {
-  __sync_add_and_fetch(&lock->writer_count, 1);
-  if (pthread_mutex_trylock(&lock->mutex))
-  {
-    pthread_mutex_lock(&lock->mutex);
-  }
+  atbuiltin_add_and_fetch(&lock->writer_count, 1, ATBUILTIN_RWLOCK_RELAXED);
+  atbuiltin_spin_lock(lock);
   if (lock->write_waiting)
   {
     /* lock success */
     return 0;
   }
   lock->write_waiting = true;
+  register atbuiltin_rwlock_signed zero_val = 0;
+  if (atbuiltin_compare_and_swap_n(&lock->lock_body, &zero_val,
+    ATBUILTIN_RWLOCK_MIN_VAL, ATBUILTIN_RWLOCK_CAS_WEAK,
+    ATBUILTIN_RWLOCK_RELAXED, ATBUILTIN_RWLOCK_RELAXED))
+  {
+    /* lock success */
+    return 0;
+  }
   while (true)
   {
-#ifdef ATBUILTIN_RWLOCK_USE_LONG_LONG_FOR_LOCK_BODY
-    if (__sync_bool_compare_and_swap(&lock->lock_body, 0, LLONG_MIN))
-#else
-    if (__sync_bool_compare_and_swap(&lock->lock_body, 0, INT_MIN))
-#endif
+    zero_val = 0;
+    if (atbuiltin_compare_and_swap_n(&lock->lock_body, &zero_val,
+      ATBUILTIN_RWLOCK_MIN_VAL, ATBUILTIN_RWLOCK_CAS_WEAK,
+      ATBUILTIN_RWLOCK_RELAXED, ATBUILTIN_RWLOCK_RELAXED))
     {
       /* lock success */
       return 0;
@@ -541,17 +601,17 @@ static int atbuiltin_rwlock_wlock_read_priority(atbuiltin_rwlock_t *lock)
 static int atbuiltin_rwlock_wunlock_read_priority(atbuiltin_rwlock_t *lock)
 {
   if (
-    __sync_sub_and_fetch(&lock->writer_count, 1) == 0 ||
+    atbuiltin_sub_and_fetch(&lock->writer_count, 1,
+      ATBUILTIN_RWLOCK_RELAXED) == 0 ||
     lock->read_waiting ||
     lock->tr_waiter_count
   ) {
-#ifdef ATBUILTIN_RWLOCK_USE_LONG_LONG_FOR_LOCK_BODY
-    while (!__sync_bool_compare_and_swap(&lock->lock_body, LLONG_MIN, 0))
-#else
-    while (!__sync_bool_compare_and_swap(&lock->lock_body, INT_MIN, 0))
-#endif
+    register atbuiltin_rwlock_signed min_val = ATBUILTIN_RWLOCK_MIN_VAL;
+    while (!atbuiltin_compare_and_swap_n(&lock->lock_body, &min_val, 0,
+      ATBUILTIN_RWLOCK_CAS_WEAK, ATBUILTIN_RWLOCK_RELAXED,
+      ATBUILTIN_RWLOCK_RELAXED))
     {
-      ;
+      min_val = ATBUILTIN_RWLOCK_MIN_VAL;
     }
     lock->write_waiting = false;
     pthread_cond_broadcast(&lock->cond);
@@ -564,20 +624,17 @@ static int atbuiltin_rwlock_wunlock_read_priority(atbuiltin_rwlock_t *lock)
 static int atbuiltin_rwlock_timedrlock_no_priority(atbuiltin_rwlock_t *lock, const struct timespec *timeout)
 {
   int res;
-#ifdef ATBUILTIN_RWLOCK_USE_LONG_LONG_FOR_LOCK_BODY
-  long long int cnt;
-#else
-  int cnt;
-#endif
+  atbuiltin_rwlock_signed cnt;
   struct timespec tss, tsc, tsr;
   tsr = *timeout;
   clock_gettime(CLOCK_MONOTONIC, &tss);
-  __sync_add_and_fetch(&lock->tr_waiter_count, 1);
+  atbuiltin_add_and_fetch(&lock->tr_waiter_count, 1, ATBUILTIN_RWLOCK_RELAXED);
   while (lock->write_waiting)
   {
     if ((res = pthread_mutex_timedlock(&lock->mutex, &tsr)))
     {
-      __sync_sub_and_fetch(&lock->tr_waiter_count, 1);
+      atbuiltin_sub_and_fetch(&lock->tr_waiter_count, 1,
+        ATBUILTIN_RWLOCK_RELAXED);
       return res;
     }
     if (lock->write_waiting)
@@ -586,7 +643,8 @@ static int atbuiltin_rwlock_timedrlock_no_priority(atbuiltin_rwlock_t *lock, con
       if (timespec_sub(&tsr, &tss, &tsc))
       {
         pthread_mutex_unlock(&lock->mutex);
-        __sync_sub_and_fetch(&lock->tr_waiter_count, 1);
+        atbuiltin_sub_and_fetch(&lock->tr_waiter_count, 1,
+          ATBUILTIN_RWLOCK_RELAXED);
         return ETIMEDOUT;
       }
       if ((res = pthread_cond_timedwait(&lock->cond, &lock->mutex, &tsr)))
@@ -594,7 +652,8 @@ static int atbuiltin_rwlock_timedrlock_no_priority(atbuiltin_rwlock_t *lock, con
         if (res == ETIMEDOUT)
         {
           pthread_mutex_unlock(&lock->mutex);
-          __sync_sub_and_fetch(&lock->tr_waiter_count, 1);
+          atbuiltin_sub_and_fetch(&lock->tr_waiter_count, 1,
+            ATBUILTIN_RWLOCK_RELAXED);
           return ETIMEDOUT;
         }
       }
@@ -603,29 +662,33 @@ static int atbuiltin_rwlock_timedrlock_no_priority(atbuiltin_rwlock_t *lock, con
     clock_gettime(CLOCK_MONOTONIC, &tsc);
     if (timespec_sub(&tsr, &tss, &tsc))
     {
-      __sync_sub_and_fetch(&lock->tr_waiter_count, 1);
+      atbuiltin_sub_and_fetch(&lock->tr_waiter_count, 1,
+        ATBUILTIN_RWLOCK_RELAXED);
       return ETIMEDOUT;
     }
   }
   while (true)
   {
-    cnt = __sync_add_and_fetch(&lock->lock_body, 1);
+    cnt = atbuiltin_add_and_fetch(&lock->lock_body, 1, ATBUILTIN_RWLOCK_RELAXED);
     if (cnt > 0)
     {
-      __sync_sub_and_fetch(&lock->tr_waiter_count, 1);
+      atbuiltin_sub_and_fetch(&lock->tr_waiter_count, 1,
+        ATBUILTIN_RWLOCK_RELAXED);
       /* lock success */
       return 0;
     }
-    __sync_sub_and_fetch(&lock->lock_body, 1);
+    atbuiltin_sub_and_fetch(&lock->lock_body, 1, ATBUILTIN_RWLOCK_RELAXED);
     clock_gettime(CLOCK_MONOTONIC, &tsc);
     if (timespec_sub(&tsr, &tss, &tsc))
     {
-      __sync_sub_and_fetch(&lock->tr_waiter_count, 1);
+      atbuiltin_sub_and_fetch(&lock->tr_waiter_count, 1,
+        ATBUILTIN_RWLOCK_RELAXED);
       return ETIMEDOUT;
     }
     if ((res = pthread_mutex_timedlock(&lock->mutex, &tsr)))
     {
-      __sync_sub_and_fetch(&lock->tr_waiter_count, 1);
+      atbuiltin_sub_and_fetch(&lock->tr_waiter_count, 1,
+        ATBUILTIN_RWLOCK_RELAXED);
       return res;
     }
     if (lock->write_waiting)
@@ -634,7 +697,8 @@ static int atbuiltin_rwlock_timedrlock_no_priority(atbuiltin_rwlock_t *lock, con
       if (timespec_sub(&tsr, &tss, &tsc))
       {
         pthread_mutex_unlock(&lock->mutex);
-        __sync_sub_and_fetch(&lock->tr_waiter_count, 1);
+        atbuiltin_sub_and_fetch(&lock->tr_waiter_count, 1,
+          ATBUILTIN_RWLOCK_RELAXED);
         return ETIMEDOUT;
       }
       if ((res = pthread_cond_timedwait(&lock->cond, &lock->mutex, &tsr)))
@@ -642,7 +706,8 @@ static int atbuiltin_rwlock_timedrlock_no_priority(atbuiltin_rwlock_t *lock, con
         if (res == ETIMEDOUT)
         {
           pthread_mutex_unlock(&lock->mutex);
-          __sync_sub_and_fetch(&lock->tr_waiter_count, 1);
+          atbuiltin_sub_and_fetch(&lock->tr_waiter_count, 1,
+            ATBUILTIN_RWLOCK_RELAXED);
           return ETIMEDOUT;
         }
       }
@@ -653,11 +718,7 @@ static int atbuiltin_rwlock_timedrlock_no_priority(atbuiltin_rwlock_t *lock, con
 
 static int atbuiltin_rwlock_rlock_no_priority(atbuiltin_rwlock_t *lock)
 {
-#ifdef ATBUILTIN_RWLOCK_USE_LONG_LONG_FOR_LOCK_BODY
-  long long int cnt;
-#else
-  int cnt;
-#endif
+  atbuiltin_rwlock_signed cnt;
   while (lock->write_waiting)
   {
     lock->read_waiting = true;
@@ -670,7 +731,7 @@ static int atbuiltin_rwlock_rlock_no_priority(atbuiltin_rwlock_t *lock)
   }
   while (true)
   {
-    cnt = __sync_add_and_fetch(&lock->lock_body, 1);
+    cnt = atbuiltin_add_and_fetch(&lock->lock_body, 1, ATBUILTIN_RWLOCK_RELAXED);
     if (cnt > 0)
     {
       lock->read_waiting = false;
@@ -678,7 +739,7 @@ static int atbuiltin_rwlock_rlock_no_priority(atbuiltin_rwlock_t *lock)
       return 0;
     }
     lock->read_waiting = true;
-    __sync_sub_and_fetch(&lock->lock_body, 1);
+    atbuiltin_sub_and_fetch(&lock->lock_body, 1, ATBUILTIN_RWLOCK_RELAXED);
     pthread_mutex_lock(&lock->mutex);
     if (lock->write_waiting)
     {
@@ -694,27 +755,31 @@ static int atbuiltin_rwlock_timedwlock_no_priority(atbuiltin_rwlock_t *lock, con
   struct timespec tss, tsc, tsr;
   tsr = *timeout;
   clock_gettime(CLOCK_MONOTONIC, &tss);
-  if (pthread_mutex_trylock(&lock->mutex))
+  if ((res = atbuiltin_spin_timedlock(lock, &tsr)))
   {
-    if ((res = pthread_mutex_timedlock(&lock->mutex, &tsr)))
-    {
-      return res;
-    }
+    return res;
   }
-  __sync_add_and_fetch(&lock->writer_count, 1);
+  atbuiltin_add_and_fetch(&lock->writer_count, 1, ATBUILTIN_RWLOCK_RELAXED);
   if (lock->write_waiting)
   {
     /* lock success */
     return 0;
   }
   lock->write_waiting = true;
+  register atbuiltin_rwlock_signed zero_val = 0;
+  if (atbuiltin_compare_and_swap_n(&lock->lock_body, &zero_val,
+    ATBUILTIN_RWLOCK_MIN_VAL, ATBUILTIN_RWLOCK_CAS_WEAK,
+    ATBUILTIN_RWLOCK_RELAXED, ATBUILTIN_RWLOCK_RELAXED))
+  {
+    /* lock success */
+    return 0;
+  }
   while (true)
   {
-#ifdef ATBUILTIN_RWLOCK_USE_LONG_LONG_FOR_LOCK_BODY
-    if (__sync_bool_compare_and_swap(&lock->lock_body, 0, LLONG_MIN))
-#else
-    if (__sync_bool_compare_and_swap(&lock->lock_body, 0, INT_MIN))
-#endif
+    zero_val = 0;
+    if (atbuiltin_compare_and_swap_n(&lock->lock_body, &zero_val,
+      ATBUILTIN_RWLOCK_MIN_VAL, ATBUILTIN_RWLOCK_CAS_WEAK,
+      ATBUILTIN_RWLOCK_RELAXED, ATBUILTIN_RWLOCK_RELAXED))
     {
       /* lock success */
       return 0;
@@ -724,7 +789,8 @@ static int atbuiltin_rwlock_timedwlock_no_priority(atbuiltin_rwlock_t *lock, con
     {
       lock->write_waiting = false;
       if (
-        __sync_sub_and_fetch(&lock->writer_count, 1) == 0 ||
+        atbuiltin_sub_and_fetch(&lock->writer_count, 1,
+          ATBUILTIN_RWLOCK_RELAXED) == 0 ||
         lock->read_waiting ||
         lock->tr_waiter_count
       ) {
@@ -742,24 +808,28 @@ static int atbuiltin_rwlock_timedwlock_no_priority(atbuiltin_rwlock_t *lock, con
 
 static int atbuiltin_rwlock_wlock_no_priority(atbuiltin_rwlock_t *lock)
 {
-  __sync_add_and_fetch(&lock->writer_count, 1);
-  if (pthread_mutex_trylock(&lock->mutex))
-  {
-    pthread_mutex_lock(&lock->mutex);
-  }
+  atbuiltin_add_and_fetch(&lock->writer_count, 1, ATBUILTIN_RWLOCK_RELAXED);
+  atbuiltin_spin_lock(lock);
   if (lock->write_waiting)
   {
     /* lock success */
     return 0;
   }
   lock->write_waiting = true;
+  register atbuiltin_rwlock_signed zero_val = 0;
+  if (atbuiltin_compare_and_swap_n(&lock->lock_body, &zero_val,
+    ATBUILTIN_RWLOCK_MIN_VAL, ATBUILTIN_RWLOCK_CAS_WEAK,
+    ATBUILTIN_RWLOCK_RELAXED, ATBUILTIN_RWLOCK_RELAXED))
+  {
+    /* lock success */
+    return 0;
+  }
   while (true)
   {
-#ifdef ATBUILTIN_RWLOCK_USE_LONG_LONG_FOR_LOCK_BODY
-    if (__sync_bool_compare_and_swap(&lock->lock_body, 0, LLONG_MIN))
-#else
-    if (__sync_bool_compare_and_swap(&lock->lock_body, 0, INT_MIN))
-#endif
+    zero_val = 0;
+    if (atbuiltin_compare_and_swap_n(&lock->lock_body, &zero_val,
+      ATBUILTIN_RWLOCK_MIN_VAL, ATBUILTIN_RWLOCK_CAS_WEAK,
+      ATBUILTIN_RWLOCK_RELAXED, ATBUILTIN_RWLOCK_RELAXED))
     {
       /* lock success */
       return 0;
@@ -774,17 +844,17 @@ static int atbuiltin_rwlock_wlock_no_priority(atbuiltin_rwlock_t *lock)
 static int atbuiltin_rwlock_wunlock_no_priority(atbuiltin_rwlock_t *lock)
 {
   if (
-    __sync_sub_and_fetch(&lock->writer_count, 1) == 0 ||
+    atbuiltin_sub_and_fetch(&lock->writer_count, 1,
+      ATBUILTIN_RWLOCK_RELAXED) == 0 ||
     lock->read_waiting ||
     lock->tr_waiter_count
   ) {
-#ifdef ATBUILTIN_RWLOCK_USE_LONG_LONG_FOR_LOCK_BODY
-    while (!__sync_bool_compare_and_swap(&lock->lock_body, LLONG_MIN, 0))
-#else
-    while (!__sync_bool_compare_and_swap(&lock->lock_body, INT_MIN, 0))
-#endif
+    register atbuiltin_rwlock_signed min_val = ATBUILTIN_RWLOCK_MIN_VAL;
+    while (!atbuiltin_compare_and_swap_n(&lock->lock_body, &min_val, 0,
+      ATBUILTIN_RWLOCK_CAS_WEAK, ATBUILTIN_RWLOCK_RELAXED,
+      ATBUILTIN_RWLOCK_RELAXED))
     {
-      ;
+      min_val = ATBUILTIN_RWLOCK_MIN_VAL;
     }
     lock->write_waiting = false;
     pthread_cond_broadcast(&lock->cond);
@@ -797,11 +867,7 @@ static int atbuiltin_rwlock_wunlock_no_priority(atbuiltin_rwlock_t *lock)
 static int atbuiltin_rwlock_timedrlock_write_priority(atbuiltin_rwlock_t *lock, const struct timespec *timeout)
 {
   int res;
-#ifdef ATBUILTIN_RWLOCK_USE_LONG_LONG_FOR_LOCK_BODY
-  long long int cnt;
-#else
-  int cnt;
-#endif
+  atbuiltin_rwlock_signed cnt;
   struct timespec tss, tsc, tsr;
   tsr = *timeout;
   clock_gettime(CLOCK_MONOTONIC, &tss);
@@ -837,13 +903,13 @@ static int atbuiltin_rwlock_timedrlock_write_priority(atbuiltin_rwlock_t *lock, 
   }
   while (true)
   {
-    cnt = __sync_add_and_fetch(&lock->lock_body, 1);
+    cnt = atbuiltin_add_and_fetch(&lock->lock_body, 1, ATBUILTIN_RWLOCK_RELAXED);
     if (cnt > 0)
     {
       /* lock success */
       return 0;
     }
-    __sync_sub_and_fetch(&lock->lock_body, 1);
+    atbuiltin_sub_and_fetch(&lock->lock_body, 1, ATBUILTIN_RWLOCK_RELAXED);
     clock_gettime(CLOCK_MONOTONIC, &tsc);
     if (timespec_sub(&tsr, &tss, &tsc))
     {
@@ -876,11 +942,7 @@ static int atbuiltin_rwlock_timedrlock_write_priority(atbuiltin_rwlock_t *lock, 
 
 static int atbuiltin_rwlock_rlock_write_priority(atbuiltin_rwlock_t *lock)
 {
-#ifdef ATBUILTIN_RWLOCK_USE_LONG_LONG_FOR_LOCK_BODY
-  long long int cnt;
-#else
-  int cnt;
-#endif
+  atbuiltin_rwlock_signed cnt;
   while (lock->write_waiting)
   {
     pthread_mutex_lock(&lock->mutex);
@@ -892,13 +954,13 @@ static int atbuiltin_rwlock_rlock_write_priority(atbuiltin_rwlock_t *lock)
   }
   while (true)
   {
-    cnt = __sync_add_and_fetch(&lock->lock_body, 1);
+    cnt = atbuiltin_add_and_fetch(&lock->lock_body, 1, ATBUILTIN_RWLOCK_RELAXED);
     if (cnt > 0)
     {
       /* lock success */
       return 0;
     }
-    __sync_sub_and_fetch(&lock->lock_body, 1);
+    atbuiltin_sub_and_fetch(&lock->lock_body, 1, ATBUILTIN_RWLOCK_RELAXED);
     pthread_mutex_lock(&lock->mutex);
     if (lock->write_waiting)
     {
@@ -914,27 +976,31 @@ static int atbuiltin_rwlock_timedwlock_write_priority(atbuiltin_rwlock_t *lock, 
   struct timespec tss, tsc, tsr;
   tsr = *timeout;
   clock_gettime(CLOCK_MONOTONIC, &tss);
-  if (pthread_mutex_trylock(&lock->mutex))
+  if ((res = atbuiltin_spin_timedlock(lock, &tsr)))
   {
-    if ((res = pthread_mutex_timedlock(&lock->mutex, &tsr)))
-    {
-      return res;
-    }
+    return res;
   }
-  __sync_add_and_fetch(&lock->writer_count, 1);
+  atbuiltin_add_and_fetch(&lock->writer_count, 1, ATBUILTIN_RWLOCK_RELAXED);
   if (lock->write_waiting)
   {
     /* lock success */
     return 0;
   }
   lock->write_waiting = true;
+  register atbuiltin_rwlock_signed zero_val = 0;
+  if (atbuiltin_compare_and_swap_n(&lock->lock_body, &zero_val,
+    ATBUILTIN_RWLOCK_MIN_VAL, ATBUILTIN_RWLOCK_CAS_WEAK,
+    ATBUILTIN_RWLOCK_RELAXED, ATBUILTIN_RWLOCK_RELAXED))
+  {
+    /* lock success */
+    return 0;
+  }
   while (true)
   {
-#ifdef ATBUILTIN_RWLOCK_USE_LONG_LONG_FOR_LOCK_BODY
-    if (__sync_bool_compare_and_swap(&lock->lock_body, 0, LLONG_MIN))
-#else
-    if (__sync_bool_compare_and_swap(&lock->lock_body, 0, INT_MIN))
-#endif
+    zero_val = 0;
+    if (atbuiltin_compare_and_swap_n(&lock->lock_body, &zero_val,
+      ATBUILTIN_RWLOCK_MIN_VAL, ATBUILTIN_RWLOCK_CAS_WEAK,
+      ATBUILTIN_RWLOCK_RELAXED, ATBUILTIN_RWLOCK_RELAXED))
     {
       /* lock success */
       return 0;
@@ -943,7 +1009,8 @@ static int atbuiltin_rwlock_timedwlock_write_priority(atbuiltin_rwlock_t *lock, 
     if (timespec_sub(&tsr, &tss, &tsc))
     {
       lock->write_waiting = false;
-      if (__sync_sub_and_fetch(&lock->writer_count, 1) == 0)
+      if (atbuiltin_sub_and_fetch(&lock->writer_count, 1,
+        ATBUILTIN_RWLOCK_RELAXED) == 0)
       {
         pthread_cond_broadcast(&lock->cond);
       }
@@ -959,24 +1026,28 @@ static int atbuiltin_rwlock_timedwlock_write_priority(atbuiltin_rwlock_t *lock, 
 
 static int atbuiltin_rwlock_wlock_write_priority(atbuiltin_rwlock_t *lock)
 {
-  __sync_add_and_fetch(&lock->writer_count, 1);
-  if (pthread_mutex_trylock(&lock->mutex))
-  {
-    pthread_mutex_lock(&lock->mutex);
-  }
+  atbuiltin_add_and_fetch(&lock->writer_count, 1, ATBUILTIN_RWLOCK_RELAXED);
+  atbuiltin_spin_lock(lock);
   if (lock->write_waiting)
   {
     /* lock success */
     return 0;
   }
   lock->write_waiting = true;
+  register atbuiltin_rwlock_signed zero_val = 0;
+  if (atbuiltin_compare_and_swap_n(&lock->lock_body, &zero_val,
+    ATBUILTIN_RWLOCK_MIN_VAL, ATBUILTIN_RWLOCK_CAS_WEAK,
+    ATBUILTIN_RWLOCK_RELAXED, ATBUILTIN_RWLOCK_RELAXED))
+  {
+    /* lock success */
+    return 0;
+  }
   while (true)
   {
-#ifdef ATBUILTIN_RWLOCK_USE_LONG_LONG_FOR_LOCK_BODY
-    if (__sync_bool_compare_and_swap(&lock->lock_body, 0, LLONG_MIN))
-#else
-    if (__sync_bool_compare_and_swap(&lock->lock_body, 0, INT_MIN))
-#endif
+    zero_val = 0;
+    if (atbuiltin_compare_and_swap_n(&lock->lock_body, &zero_val,
+      ATBUILTIN_RWLOCK_MIN_VAL, ATBUILTIN_RWLOCK_CAS_WEAK,
+      ATBUILTIN_RWLOCK_RELAXED, ATBUILTIN_RWLOCK_RELAXED))
     {
       /* lock success */
       return 0;
@@ -990,15 +1061,15 @@ static int atbuiltin_rwlock_wlock_write_priority(atbuiltin_rwlock_t *lock)
 
 static int atbuiltin_rwlock_wunlock_write_priority(atbuiltin_rwlock_t *lock)
 {
-  if (__sync_sub_and_fetch(&lock->writer_count, 1) == 0)
+  if (atbuiltin_sub_and_fetch(&lock->writer_count, 1,
+    ATBUILTIN_RWLOCK_RELAXED) == 0)
   {
-#ifdef ATBUILTIN_RWLOCK_USE_LONG_LONG_FOR_LOCK_BODY
-    while (!__sync_bool_compare_and_swap(&lock->lock_body, LLONG_MIN, 0))
-#else
-    while (!__sync_bool_compare_and_swap(&lock->lock_body, INT_MIN, 0))
-#endif
+    register atbuiltin_rwlock_signed min_val = ATBUILTIN_RWLOCK_MIN_VAL;
+    while (!atbuiltin_compare_and_swap_n(&lock->lock_body, &min_val, 0,
+      ATBUILTIN_RWLOCK_CAS_WEAK, ATBUILTIN_RWLOCK_RELAXED,
+      ATBUILTIN_RWLOCK_RELAXED))
     {
-      ;
+      min_val = ATBUILTIN_RWLOCK_MIN_VAL;
     }
     lock->write_waiting = false;
     pthread_cond_broadcast(&lock->cond);
