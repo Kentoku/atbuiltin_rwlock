@@ -114,7 +114,7 @@ Test source codes are in test directory.
 
 1. atbuiltin_rwlock (use ATBUILTIN_RWLOCK_READ_PRIORITY)
   * rlock 100%, wlock   0% :  8 seconds
-  * rlock  90%, wlock  10% : 14 seconds
+  * rlock  90%, wlock  10% : 12 seconds
   * rlock   0%, wlock 100% : 22 seconds
 
 2. atbuiltin_rwlock (use ATBUILTIN_RWLOCK_NO_PRIORITY)

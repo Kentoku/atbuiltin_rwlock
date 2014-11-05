@@ -522,12 +522,12 @@ static int atbuiltin_rwlock_timedwlock_read_priority(atbuiltin_rwlock_t *lock, c
     /* lock success */
     return 0;
   }
-  lock->write_waiting = true;
   register atbuiltin_rwlock_signed zero_val = 0;
   if (atbuiltin_compare_and_swap_n(&lock->lock_body, &zero_val,
     ATBUILTIN_RWLOCK_MIN_VAL, ATBUILTIN_RWLOCK_CAS_WEAK,
     ATBUILTIN_RWLOCK_RELAXED, ATBUILTIN_RWLOCK_RELAXED))
   {
+    lock->write_waiting = true;
     /* lock success */
     return 0;
   }
@@ -538,6 +538,7 @@ static int atbuiltin_rwlock_timedwlock_read_priority(atbuiltin_rwlock_t *lock, c
       ATBUILTIN_RWLOCK_MIN_VAL, ATBUILTIN_RWLOCK_CAS_WEAK,
       ATBUILTIN_RWLOCK_RELAXED, ATBUILTIN_RWLOCK_RELAXED))
     {
+      lock->write_waiting = true;
       /* lock success */
       return 0;
     }
@@ -572,12 +573,12 @@ static int atbuiltin_rwlock_wlock_read_priority(atbuiltin_rwlock_t *lock)
     /* lock success */
     return 0;
   }
-  lock->write_waiting = true;
   register atbuiltin_rwlock_signed zero_val = 0;
   if (atbuiltin_compare_and_swap_n(&lock->lock_body, &zero_val,
     ATBUILTIN_RWLOCK_MIN_VAL, ATBUILTIN_RWLOCK_CAS_WEAK,
     ATBUILTIN_RWLOCK_RELAXED, ATBUILTIN_RWLOCK_RELAXED))
   {
+    lock->write_waiting = true;
     /* lock success */
     return 0;
   }
@@ -588,6 +589,7 @@ static int atbuiltin_rwlock_wlock_read_priority(atbuiltin_rwlock_t *lock)
       ATBUILTIN_RWLOCK_MIN_VAL, ATBUILTIN_RWLOCK_CAS_WEAK,
       ATBUILTIN_RWLOCK_RELAXED, ATBUILTIN_RWLOCK_RELAXED))
     {
+      lock->write_waiting = true;
       /* lock success */
       return 0;
     }
