@@ -33,11 +33,16 @@
 
 #define NUMBER_OF_THREADS 100
 #define NUMBER_OF_LOOPS 1000000
-/*
+
+#ifdef PTHREAD_RWLOCK_PREFER_READER_NP_TEST
 #define OPTION_OF_RWLOCKATTR PTHREAD_RWLOCK_PREFER_READER_NP
+#else
+#ifdef PTHREAD_RWLOCK_PREFER_WRITER_NP_TEST
 #define OPTION_OF_RWLOCKATTR PTHREAD_RWLOCK_PREFER_WRITER_NP
-*/
+#else
 #define OPTION_OF_RWLOCKATTR PTHREAD_RWLOCK_PREFER_WRITER_NONRECURSIVE_NP
+#endif
+#endif
 
 pthread_rwlock_t rwlock;
 
@@ -45,9 +50,15 @@ void *worker_thread(void *arg)
 {
   int i, ret;
   int worker_id = *((int *) arg);
-/*  if ((worker_id % NUMBER_OF_THREADS) < NUMBER_OF_THREADS) *//* 100% write */
-/*  if ((worker_id % NUMBER_OF_THREADS) < 0) *//* 100% read */
+#ifdef PTHREAD_RWLOCK_W100_TEST
+  if ((worker_id % NUMBER_OF_THREADS) < NUMBER_OF_THREADS) /* 100% write */
+#else
+#ifdef PTHREAD_RWLOCK_R100_TEST
+  if ((worker_id % NUMBER_OF_THREADS) < 0) /* 100% read */
+#else
   if ((worker_id % NUMBER_OF_THREADS) < NUMBER_OF_THREADS / 10) /* 10% write 90% read */
+#endif
+#endif
   {
     for (i = 0; i < NUMBER_OF_LOOPS; i++)
     {
