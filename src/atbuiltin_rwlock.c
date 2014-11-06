@@ -313,7 +313,7 @@ int atbuiltin_rwlock_tryrlock(atbuiltin_rwlock_t *lock)
   {
     return EBUSY;
   }
-  cnt = atbuiltin_add_and_fetch(&lock->lock_body, 1, ATBUILTIN_RWLOCK_RELAXED);
+  cnt = atbuiltin_add_and_fetch(&lock->lock_body, 1, ATBUILTIN_RWLOCK_ACQUIRE);
   if (cnt > 0)
   {
     /* lock success */
@@ -337,7 +337,7 @@ int atbuiltin_rwlock_rlock(atbuiltin_rwlock_t *lock)
 
 int atbuiltin_rwlock_runlock(atbuiltin_rwlock_t *lock)
 {
-  atbuiltin_sub_and_fetch(&lock->lock_body, 1, ATBUILTIN_RWLOCK_RELAXED);
+  atbuiltin_sub_and_fetch(&lock->lock_body, 1, ATBUILTIN_RWLOCK_RELEASE);
   return 0;
 }
 
@@ -355,7 +355,7 @@ int atbuiltin_rwlock_trywlock(atbuiltin_rwlock_t *lock)
   register atbuiltin_rwlock_signed zero_val = 0;
   if (atbuiltin_compare_and_swap_n(&lock->lock_body, &zero_val,
     ATBUILTIN_RWLOCK_MIN_VAL, ATBUILTIN_RWLOCK_CAS_WEAK,
-    ATBUILTIN_RWLOCK_RELAXED, ATBUILTIN_RWLOCK_RELAXED))
+    ATBUILTIN_RWLOCK_ACQUIRE, ATBUILTIN_RWLOCK_RELAXED))
   {
     atbuiltin_add_and_fetch(&lock->writer_count, 1, ATBUILTIN_RWLOCK_RELAXED);
     lock->write_waiting = true;
@@ -427,7 +427,7 @@ static int atbuiltin_rwlock_timedrlock_read_priority(atbuiltin_rwlock_t *lock, c
   }
   while (true)
   {
-    cnt = atbuiltin_add_and_fetch(&lock->lock_body, 1, ATBUILTIN_RWLOCK_RELAXED);
+    cnt = atbuiltin_add_and_fetch(&lock->lock_body, 1, ATBUILTIN_RWLOCK_ACQUIRE);
     if (cnt > 0)
     {
       atbuiltin_sub_and_fetch(&lock->tr_waiter_count, 1, ATBUILTIN_RWLOCK_RELAXED);
@@ -488,7 +488,7 @@ static int atbuiltin_rwlock_rlock_read_priority(atbuiltin_rwlock_t *lock)
   }
   while (true)
   {
-    cnt = atbuiltin_add_and_fetch(&lock->lock_body, 1, ATBUILTIN_RWLOCK_RELAXED);
+    cnt = atbuiltin_add_and_fetch(&lock->lock_body, 1, ATBUILTIN_RWLOCK_ACQUIRE);
     if (cnt > 0)
     {
       lock->read_waiting = false;
@@ -671,7 +671,7 @@ static int atbuiltin_rwlock_timedrlock_no_priority(atbuiltin_rwlock_t *lock, con
   }
   while (true)
   {
-    cnt = atbuiltin_add_and_fetch(&lock->lock_body, 1, ATBUILTIN_RWLOCK_RELAXED);
+    cnt = atbuiltin_add_and_fetch(&lock->lock_body, 1, ATBUILTIN_RWLOCK_ACQUIRE);
     if (cnt > 0)
     {
       atbuiltin_sub_and_fetch(&lock->tr_waiter_count, 1,
@@ -733,7 +733,7 @@ static int atbuiltin_rwlock_rlock_no_priority(atbuiltin_rwlock_t *lock)
   }
   while (true)
   {
-    cnt = atbuiltin_add_and_fetch(&lock->lock_body, 1, ATBUILTIN_RWLOCK_RELAXED);
+    cnt = atbuiltin_add_and_fetch(&lock->lock_body, 1, ATBUILTIN_RWLOCK_ACQUIRE);
     if (cnt > 0)
     {
       lock->read_waiting = false;
@@ -905,7 +905,7 @@ static int atbuiltin_rwlock_timedrlock_write_priority(atbuiltin_rwlock_t *lock, 
   }
   while (true)
   {
-    cnt = atbuiltin_add_and_fetch(&lock->lock_body, 1, ATBUILTIN_RWLOCK_RELAXED);
+    cnt = atbuiltin_add_and_fetch(&lock->lock_body, 1, ATBUILTIN_RWLOCK_ACQUIRE);
     if (cnt > 0)
     {
       /* lock success */
@@ -956,7 +956,7 @@ static int atbuiltin_rwlock_rlock_write_priority(atbuiltin_rwlock_t *lock)
   }
   while (true)
   {
-    cnt = atbuiltin_add_and_fetch(&lock->lock_body, 1, ATBUILTIN_RWLOCK_RELAXED);
+    cnt = atbuiltin_add_and_fetch(&lock->lock_body, 1, ATBUILTIN_RWLOCK_ACQUIRE);
     if (cnt > 0)
     {
       /* lock success */
